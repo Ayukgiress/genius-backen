@@ -26,3 +26,16 @@ async def update_analysis(db: AsyncSession, db_analysis: Analysis, analysis: Ana
     await db.commit()
     await db.refresh(db_analysis)
     return db_analysis
+
+async def delete_analysis(db: AsyncSession, db_analysis: Analysis):
+    await db.delete(db_analysis)
+    await db.commit()
+    return True
+
+async def delete_analyses_by_resume(db: AsyncSession, resume_id: int):
+    result = await db.execute(select(Analysis).where(Analysis.resume_id == resume_id))
+    analyses = result.scalars().all()
+    for analysis in analyses:
+        await db.delete(analysis)
+    await db.commit()
+    return True

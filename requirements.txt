@@ -17,3 +17,6 @@ openai
 langchain
 google-genai
 slowapi
+cloudinary
+groq
+aiohttp

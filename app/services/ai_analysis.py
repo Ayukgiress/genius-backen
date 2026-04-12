@@ -1,4 +1,3 @@
-import google.genai as genai
 import json
 import re
 from typing import Dict, Any, Optional
@@ -7,39 +6,45 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-MAX_RESUME_LENGTH = 50000  
+MAX_RESUME_LENGTH = 50000
 
 
 class ResumeAnalysisService:
-    """Service for analyzing resumes using Google Gemini AI"""
+    """Service for analyzing resumes using Groq AI (free tier)"""
     
     def __init__(self):
-        if settings.GEMINI_API_KEY:
-            self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
-            self.model_name = "gemini-1.5-flash"
-        else:
-            self.client = None
-            self.model_name = None
+        self.groq_client = None
+        self.gemini_client = None
+        self.model_name = None
+        self.provider = None
+        
+        if settings.GROQ_API_KEY:
+            try:
+                from groq import AsyncGroq
+                self.groq_client = AsyncGroq(api_key=settings.GROQ_API_KEY)
+                self.model_name = "llama-3.3-70b-versatile"  # Free model on Groq
+                self.provider = "groq"
+                logger.info("Using Groq for AI analysis (free tier)")
+            except ImportError:
+                logger.warning("Groq package not installed")
+        
+        # Fallback to Gemini if no Groq key
+        if not self.groq_client and settings.GEMINI_API_KEY:
+            try:
+                import google.genai as genai
+                self.gemini_client = genai.Client(api_key=settings.GEMINI_API_KEY)
+                self.model_name = "gemini-2.0-flash"
+                self.provider = "gemini"
+                logger.info("Using Gemini for AI analysis")
+            except ImportError:
+                logger.warning("Google GenAI package not installed")
     
     async def analyze_resume(self, resume_content: str) -> Dict[str, Any]:
         """
-        Analyze a resume and provide suggestions using Gemini AI.
-        
-        Args:
-            resume_content: The text content of the resume
-            
-        Returns:
-            Dict containing analysis results with:
-            - overall_score: int (0-100)
-            - strengths: list of strings
-            - weaknesses: list of strings
-            - suggestions: list of strings
-            - ats_compatibility: str (high/medium/low)
-            - keywords_missing: list of strings
-            - summary: str
+        Analyze a resume and provide suggestions using AI.
         """
-        if not self.client:
-            raise ValueError("GEMINI_API_KEY not configured")
+        if not self.groq_client and not self.gemini_client:
+            raise ValueError("No AI provider configured. Please set GROQ_API_KEY or GEMINI_API_KEY")
         
         if len(resume_content) > MAX_RESUME_LENGTH:
             raise ValueError(f"Resume content exceeds maximum length of {MAX_RESUME_LENGTH} characters")
@@ -49,140 +54,153 @@ class ResumeAnalysisService:
         
         prompt = self._build_analysis_prompt(resume_content)
         
-        try:
-            logger.info(f"Starting AI resume analysis with model {self.model_name}")
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt
-            )
-            logger.info("AI resume analysis completed successfully")
-            analysis_result = self._parse_ai_response(response.text)
-            return analysis_result
-        except ValueError:
-            raise  # Re-raise ValueError as-is
-        except Exception as e:
-            logger.error(f"AI resume analysis failed: {str(e)}", exc_info=True)
-            raise
+        # Try Groq first (free)
+        if self.groq_client:
+            try:
+                logger.info(f"Starting AI resume analysis with Groq model {self.model_name}")
+                response = await self.groq_client.chat.completions.create(
+                    model=self.model_name,
+                    messages=[
+                        {"role": "system", "role": "system", "content": "You are a professional resume analyst. Provide detailed analysis in JSON format."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.3,
+                    max_tokens=4000,
+                    response_format={"type": "json_object"}
+                )
+                logger.info("AI resume analysis completed successfully with Groq")
+                return self._parse_ai_response(response.choices[0].message.content)
+            except Exception as groq_error:
+                logger.warning(f"Groq failed, trying Gemini: {groq_error}")
+        
+        if self.gemini_client:
+            try:
+                logger.info(f"Starting AI resume analysis with Gemini model {self.model_name}")
+                response = self.gemini_client.models.generate_content(
+                    model=self.model_name,
+                    contents=prompt
+                )
+                logger.info("AI resume analysis completed successfully with Gemini")
+                return self._parse_ai_response(response.text)
+            except Exception as gemini_error:
+                logger.error(f"Gemini also failed: {gemini_error}")
+                raise ValueError(f"AI analysis failed: {str(gemini_error)}")
+        
+        raise ValueError("No AI provider available")
+    
+    async def get_suggestions(self, resume_content: str, focus_area: str = "general") -> Dict[str, Any]:
+        """Get AI suggestions for improving a specific area of the resume."""
+        if not self.groq_client and not self.gemini_client:
+            raise ValueError("No AI provider configured")
+        
+        prompt = self._build_suggestions_prompt(resume_content, focus_area)
+        
+        if self.groq_client:
+            try:
+                logger.info(f"Generating AI suggestions with Groq for focus_area={focus_area}")
+                response = await self.groq_client.chat.completions.create(
+                    model=self.model_name,
+                    messages=[
+                        {"role": "system", "content": "You are a professional resume coach. Provide detailed suggestions in JSON format."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.3,
+                    max_tokens=4000,
+                    response_format={"type": "json_object"}
+                )
+                logger.info("AI suggestions generated successfully with Groq")
+                return self._parse_ai_response(response.choices[0].message.content)
+            except Exception as groq_error:
+                logger.warning(f"Groq failed for suggestions, trying Gemini: {groq_error}")
+        
+        # Fallback to Gemini
+        if self.gemini_client:
+            try:
+                logger.info(f"Generating AI suggestions with Gemini for focus_area={focus_area}")
+                response = self.gemini_client.models.generate_content(
+                    model=self.model_name,
+                    contents=prompt
+                )
+                logger.info("AI suggestions generated successfully with Gemini")
+                return self._parse_ai_response(response.text)
+            except Exception as gemini_error:
+                logger.error(f"Gemini also failed for suggestions: {gemini_error}")
+                raise ValueError(f"AI suggestion generation failed: {str(gemini_error)}")
+        
+        raise ValueError("No AI provider available")
     
     def _build_analysis_prompt(self, resume_content: str) -> str:
-        """Build the prompt for resume analysis"""
-        return f"""You are an expert resume reviewer and career consultant. 
-Analyze the following resume and provide detailed feedback in JSON format.
+        """Build the prompt for resume analysis."""
+        return f"""Analyze the following resume and provide a detailed analysis in JSON format.
 
 Resume Content:
 {resume_content}
 
-Provide your analysis in the following JSON format only (no other text):
+Please provide your analysis in the following JSON format:
 {{
-    "overall_score": <number between 0-100>,
+    "overall_score": <number 0-100>,
     "strengths": [<list of 3-5 strengths>],
     "weaknesses": [<list of 3-5 weaknesses>],
-    "suggestions": [<list of 5-7 specific improvement suggestions>],
+    "suggestions": [<list of 5-7 specific suggestions>],
     "ats_compatibility": "<high, medium, or low>",
-    "keywords_missing": [<list of important keywords that could be added>],
-    "summary": "<2-3 sentence overall summary>"
+    "keywords_missing": [<list of important keywords missing>],
+    "summary": "<2-3 sentence summary of the resume>"
 }}
 
-Be critical but constructive. Consider:
-- Formatting and structure
-- Content clarity and conciseness
-- Action verbs and quantifiable achievements
-- Keywords for ATS (Applicant Tracking Systems)
-- Industry relevance
-- Missing sections or information"""
+Provide only the JSON, no other text."""
+
+    def _build_suggestions_prompt(self, resume_content: str, focus_area: str) -> str:
+        """Build the prompt for specific suggestions."""
+        return f"""Analyze this resume and provide detailed improvement suggestions focused on: {focus_area}
+
+Resume Content:
+{resume_content}
+
+Provide your suggestions in JSON format:
+{{
+    "area_focus": "{focus_area}",
+    "current_issues": [<list of issues in this area>],
+    "specific_improvements": [<list of specific improvements>],
+    "examples": [<examples of better phrasing if applicable>],
+    "priority_improvements": [<top 5 priority improvements>],
+    "quick_wins": [<quick changes with high impact>],
+    "detailed_guidance": [<step-by-step guidance>]
+}}
+
+Provide only the JSON, no other text."""
 
     def _parse_ai_response(self, response_text: str) -> Dict[str, Any]:
-        """Parse the AI response into a structured dictionary"""
-        
-        # Try to extract JSON from the response
-        json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-        
-        if json_match:
-            try:
-                result = json.loads(json_match.group())
-                return self._validate_and_normalize(result)
-            except json.JSONDecodeError:
-                pass
-        
-        # If JSON parsing fails, create a structured response from the text
-        return {
-            "overall_score": 50,
-            "strengths": ["Unable to parse AI response"],
-            "weaknesses": ["Parse error"],
-            "suggestions": ["Please try again"],
-            "ats_compatibility": "unknown",
-            "keywords_missing": [],
-            "summary": "Error parsing AI response. Please try again."
-        }
-    
-    def _validate_and_normalize(self, result: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate and normalize the analysis result"""
-        return {
-            "overall_score": min(max(result.get("overall_score", 50), 0), 100),
-            "strengths": result.get("strengths", []),
-            "weaknesses": result.get("weaknesses", []),
-            "suggestions": result.get("suggestions", []),
-            "ats_compatibility": result.get("ats_compatibility", "unknown"),
-            "keywords_missing": result.get("keywords_missing", []),
-            "summary": result.get("summary", "")
-        }
-    
-    async def generate_suggestions(self, resume_content: str, focus_area: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Generate specific suggestions for improving a resume.
-        
-        Args:
-            resume_content: The text content of the resume
-            focus_area: Optional specific area to focus on (e.g., 'summary', 'experience', 'skills')
-            
-        Returns:
-            Dict containing targeted suggestions
-        """
-        if not self.client:
-            raise ValueError("GEMINI_API_KEY not configured")
-        
-        if len(resume_content) > MAX_RESUME_LENGTH:
-            raise ValueError(f"Resume content exceeds maximum length of {MAX_RESUME_LENGTH} characters")
-        
-        if focus_area:
-            prompt = f"""You are an expert resume reviewer. Provide specific suggestions for improving the {focus_area} section of this resume.
-
-Resume Content:
-{resume_content}
-
-Provide your suggestions in JSON format:
-{{
-    "focus_area": "{focus_area}",
-    "current_issues": [<list of current issues in this section>],
-    "specific_suggestions": [<list of 3-5 specific suggestions>],
-    "examples": [<optional examples of improvements>]
-}}"""
-        else:
-            prompt = f"""You are an expert resume reviewer. Provide general improvement suggestions for this resume.
-
-Resume Content:
-{resume_content}
-
-Provide your suggestions in JSON format:
-{{
-    "priority_improvements": [<list of top 5 priority improvements>],
-    "quick_wins": [<list of quick changes with high impact>],
-    "detailed_guidance": [<step-by-step guidance>]
-}}"""
-        
+        """Parse the AI response into a structured dictionary."""
         try:
-            logger.info(f"Generating AI suggestions for focus_area={focus_area}")
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt
-            )
-            logger.info("AI suggestions generated successfully")
-            return self._parse_ai_response(response.text)
-        except ValueError:
-            raise  # Re-raise ValueError as-is
-        except Exception as e:
-            logger.error(f"AI suggestion generation failed: {str(e)}", exc_info=True)
-            raise
+            # Try to find JSON in the response
+            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group())
+            else:
+                data = json.loads(response_text)
+            
+            # Ensure all expected fields exist with defaults
+            return {
+                "overall_score": data.get("overall_score", 50),
+                "strengths": data.get("strengths", []),
+                "weaknesses": data.get("weaknesses", []),
+                "suggestions": data.get("suggestions", []),
+                "ats_compatibility": data.get("ats_compatibility", "medium"),
+                "keywords_missing": data.get("keywords_missing", []),
+                "summary": data.get("summary", "Resume analysis completed.")
+            }
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse AI response: {e}")
+            # Return a default response
+            return {
+                "overall_score": 50,
+                "strengths": ["Unable to analyze"],
+                "weaknesses": ["Unable to analyze"],
+                "suggestions": ["Please try again"],
+                "ats_compatibility": "medium",
+                "keywords_missing": [],
+                "summary": "Analysis could not be completed. Please try again."
+            }
 
 
 # Singleton instance

@@ -120,7 +120,11 @@ async def analyze_resume_with_ai(
     # Check if resume has content to analyze
     if not resume.content:
         raise HTTPException(status_code=400, detail="Resume has no content to analyze")
-    
+
+    # Check if content is just a placeholder (failed PDF extraction)
+    if resume.content.startswith("[PDF file uploaded") or resume.content.startswith("["):
+        raise HTTPException(status_code=400, detail="Resume content could not be extracted. Please upload a text-based PDF or plain text resume.")
+
     if len(resume.content) > MAX_RESUME_LENGTH:
         raise HTTPException(
             status_code=400,

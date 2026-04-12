@@ -9,7 +9,7 @@ class KanbanCardBase(BaseModel):
     order: int = 0
 
 class KanbanCardCreate(KanbanCardBase):
-    board_id: int
+    board_id: Optional[int] = None
 
 class KanbanCardUpdate(BaseModel):
     title: Optional[str] = None
@@ -29,7 +29,7 @@ class KanbanBoardBase(BaseModel):
     name: str
 
 class KanbanBoardCreate(KanbanBoardBase):
-    user_id: int
+    user_id: Optional[int] = None
 
 class KanbanBoardUpdate(BaseModel):
     name: Optional[str] = None

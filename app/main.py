@@ -2,12 +2,16 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers import auth, resumes, analysis, analytics
 from app.routers.kanban import router as kanban_router
+from app.routers.jobs import router as jobs_router
+from app.routers.preferences import router as preferences_router
 from app.db.session import engine, Base
+from app.core.config import settings
 import app.models.user
 import app.models.analysis
 import app.models.analytics
 import app.models.kanban
 import app.models.resume
+import app.models.job
 
 app = FastAPI(title="Genius API", version="1.0.0")
 
@@ -67,6 +71,8 @@ app.include_router(resumes.router)
 app.include_router(kanban_router)
 app.include_router(analysis.router)
 app.include_router(analytics.router)
+app.include_router(jobs_router)
+app.include_router(preferences_router)
 
 @app.get("/")
 async def root():

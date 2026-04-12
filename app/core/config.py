@@ -27,7 +27,15 @@ class Settings(BaseSettings):
     # Google OAuth settings
     GOOGLE_CLIENT_ID: Optional[str] = None
     GOOGLE_CLIENT_SECRET: Optional[str] = None
-    GOOGLE_REDIRECT_URI: str = "http://127.0.0.1:8000/auth/google/callback"
+    GOOGLE_REDIRECT_URI: str = "http://localhost:3000/auth/google/callback"
+    
+    # Cloudinary Configuration
+    CLOUDINARY_CLOUD_NAME: Optional[str] = None
+    CLOUDINARY_API_KEY: Optional[str] = None
+    CLOUDINARY_API_SECRET: Optional[str] = None
+    
+    # Groq AI Configuration (free tier)
+    GROQ_API_KEY: Optional[str] = None
 
     class Config:
         env_file = ".env"

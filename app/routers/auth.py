@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Optional
 from datetime import datetime, timedelta, timezone
 from app.db.session import get_db
 from app.crud.user import create_user, get_user_by_email, verify_password, verify_user_email, regenerate_verification_token, get_or_create_google_user
@@ -348,6 +349,28 @@ async def login(
 
 @router.get("/me", response_model=User)
 async def get_me(current_user: User = Depends(get_current_user)):
+    return current_user
+
+
+@router.patch("/me", response_model=User)
+async def update_me(
+    name: Optional[str] = None,
+    bio: Optional[str] = None,
+    career_preferences: Optional[dict] = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Update current user profile."""
+    if name is not None:
+        current_user.name = name
+    if bio is not None:
+        current_user.bio = bio
+    if career_preferences is not None:
+        current_user.career_preferences = career_preferences
+    
+    db.add(current_user)
+    await db.commit()
+    await db.refresh(current_user)
     return current_user
 
 @router.post("/logout")

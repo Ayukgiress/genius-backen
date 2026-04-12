@@ -1,3 +1,4 @@
+from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.models.user import User
@@ -105,3 +106,15 @@ async def get_or_create_google_user(db: AsyncSession, email: str, name: str, goo
     
     # Create new user
     return await create_google_user(db, email, name, google_id)
+
+
+async def update_career_preferences(db: AsyncSession, user_id: int, preferences: Optional[dict]):
+    """Update user's career preferences."""
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if user:
+        user.career_preferences = preferences
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
+    return user
