@@ -4,7 +4,7 @@ from typing import Optional
 class Settings(BaseSettings):
     PROJECT_NAME: str = "Genius API"
     VERSION: str = "1.0.0"
-    DATABASE_URL: str = "postgresql+asyncpg://user:pass@localhost:5432/genius"
+    DATABASE_URL: str = "postgresql://genius_jjum_user:sHKb4XNigYxgHAIcvjo6pNIIUh1nvyhj@dpg-d7ivqcgsfn5c738n50hg-a.oregon-postgres.render.com/genius_jjum"
     REDIS_URL: str = "redis://localhost:6379/0"
     S3_BUCKET: Optional[str] = None
     OPENAI_API_KEY: Optional[str] = None
