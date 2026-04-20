@@ -22,19 +22,14 @@ class ResumeAnalysisService:
             try:
                 from groq import AsyncGroq
                 self.groq_client = AsyncGroq(api_key=settings.GROQ_API_KEY)
-                self.model_name = "llama-3.3-70b-versatile"  # Free model on Groq
-                self.provider = "groq"
                 logger.info("Using Groq for AI analysis (free tier)")
             except ImportError:
                 logger.warning("Groq package not installed")
         
-        # Fallback to Gemini if no Groq key
-        if not self.groq_client and settings.GEMINI_API_KEY:
+        if settings.GEMINI_API_KEY:
             try:
                 import google.genai as genai
                 self.gemini_client = genai.Client(api_key=settings.GEMINI_API_KEY)
-                self.model_name = "gemini-2.0-flash"
-                self.provider = "gemini"
                 logger.info("Using Gemini for AI analysis")
             except ImportError:
                 logger.warning("Google GenAI package not installed")
@@ -57,11 +52,12 @@ class ResumeAnalysisService:
         # Try Groq first (free)
         if self.groq_client:
             try:
-                logger.info(f"Starting AI resume analysis with Groq model {self.model_name}")
+                model = "llama-3.3-70b-versatile"
+                logger.info(f"Starting AI resume analysis with Groq model {model}")
                 response = await self.groq_client.chat.completions.create(
-                    model=self.model_name,
+                    model=model,
                     messages=[
-                        {"role": "system", "role": "system", "content": "You are a professional resume analyst. Provide detailed analysis in JSON format."},
+                        {"role": "system", "content": "You are a professional resume analyst. Provide detailed analysis in JSON format."},
                         {"role": "user", "content": prompt}
                     ],
                     temperature=0.3,
@@ -75,9 +71,10 @@ class ResumeAnalysisService:
         
         if self.gemini_client:
             try:
-                logger.info(f"Starting AI resume analysis with Gemini model {self.model_name}")
+                model = "gemini-2.0-flash"
+                logger.info(f"Starting AI resume analysis with Gemini model {model}")
                 response = self.gemini_client.models.generate_content(
-                    model=self.model_name,
+                    model=model,
                     contents=prompt
                 )
                 logger.info("AI resume analysis completed successfully with Gemini")
@@ -86,7 +83,7 @@ class ResumeAnalysisService:
                 logger.error(f"Gemini also failed: {gemini_error}")
                 raise ValueError(f"AI analysis failed: {str(gemini_error)}")
         
-        raise ValueError("No AI provider available")
+        raise ValueError("No AI provider available or all providers failed")
     
     async def get_suggestions(self, resume_content: str, focus_area: str = "general") -> Dict[str, Any]:
         """Get AI suggestions for improving a specific area of the resume."""

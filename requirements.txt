@@ -20,3 +20,5 @@ slowapi
 cloudinary
 groq
 aiohttp
+gunicorn
+uvicorn
