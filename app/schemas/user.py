@@ -13,8 +13,8 @@ class UserCreate(UserBase):
     @field_validator('password')
     @classmethod
     def validate_password_length(cls, v):
-        if len(v) > 72:
-            raise ValueError('Password must be 72 characters or less')
+        if len(v.encode('utf-8')) > 72:
+            raise ValueError('Password must be 72 bytes or less when encoded as UTF-8')
         return v
 
 class UserUpdate(BaseModel):
