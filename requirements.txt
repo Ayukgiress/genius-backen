@@ -1,6 +1,7 @@
 fastapi[all]
 sqlalchemy[asyncio]
-asyncpg
+asyncpg==0.31.0
+psycopg2-binary==2.9.10
 alembic
 pydantic-settings
 celery
