@@ -1,5 +1,15 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+import logging
+
+# Patch passlib to work with bcrypt 4.0.0+
+try:
+    import bcrypt
+    if not hasattr(bcrypt, "__about__"):
+        bcrypt.__about__ = type("About", (object,), {"__version__": bcrypt.__version__})
+except ImportError:
+    pass
+
 from app.routers import auth, resumes, analysis, analytics
 from app.routers.kanban import router as kanban_router
 from app.routers.jobs import router as jobs_router
