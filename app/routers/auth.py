@@ -331,7 +331,15 @@ async def login(
     form_data: OAuth2PasswordRequestForm = Depends()
 ):
     user = await get_user_by_email(db, email=form_data.username)
-    if not user or not verify_password(form_data.password, user.hashed_password):
+    if not user:
+        print(f"Login failed: User not found with email {form_data.username}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+        )
+    
+    if not verify_password(form_data.password, user.hashed_password):
+        print(f"Login failed: Incorrect password for user {form_data.username}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
@@ -339,6 +347,7 @@ async def login(
     
     # Check if email is verified
     if not user.is_verified:
+        print(f"Login failed: Email not verified for user {form_data.username}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Email not verified. Please verify your email address.",

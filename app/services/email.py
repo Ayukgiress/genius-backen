@@ -38,6 +38,8 @@ def _send_email_sync(email: str, subject: str, html_content: str, text_content: 
         
         context = ssl.create_default_context()
         
+        print(f"Attempting to login to {settings.SMTP_HOST}:{settings.SMTP_PORT} as {settings.SMTP_USER}")
+        
         with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
             server.starttls(context=context)
             server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
@@ -65,7 +67,8 @@ async def send_verification_email(email: str, token: str) -> bool:
             print(f"Please configure SMTP credentials in .env file to enable email sending.")
             return False
         
-        verification_url = f"http://127.0.0.1:8000/auth/verify-email-html?token={token}"
+        verification_url = f"{settings.FRONTEND_URL}/verify-email?token={token}"
+        print(f"Verification URL for {email}: {verification_url}")
         
         html_content = f"""
         <!DOCTYPE html>

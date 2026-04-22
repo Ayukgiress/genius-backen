@@ -22,12 +22,12 @@ class Settings(BaseSettings):
     SMTP_FROM_NAME: str = "Genius API"
     
     # Frontend URL for verification links
-    FRONTEND_URL: str = "http://localhost:3000"
+    FRONTEND_URL: str = "https://genuis-pi.vercel.app"
     
     # Google OAuth settings
     GOOGLE_CLIENT_ID: Optional[str] = None
     GOOGLE_CLIENT_SECRET: Optional[str] = None
-    GOOGLE_REDIRECT_URI: str = "http://localhost:3000/auth/google/callback"
+    GOOGLE_REDIRECT_URI: str = "https://genuis-pi.vercel.app/auth/google/callback"
     
     # Cloudinary Configuration
     CLOUDINARY_CLOUD_NAME: Optional[str] = None
