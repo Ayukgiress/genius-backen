@@ -11,14 +11,14 @@ import uuid
 
 router = APIRouter(prefix="/resumes", tags=["resumes"])
 
-@router.get("/", response_model=List[Resume])
+@router.get("", response_model=List[Resume])
 async def list_resumes(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     return await get_resumes_by_user(db, user_id=current_user.id)
 
-@router.post("/", response_model=Resume, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=Resume, status_code=status.HTTP_201_CREATED)
 async def create_resume(
     resume_in: ResumeCreate,
     db: AsyncSession = Depends(get_db),

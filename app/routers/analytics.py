@@ -9,14 +9,14 @@ from app.crud.analytics import create_analytics_event, get_analytics_by_user
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
-@router.get("/", response_model=List[Analytics])
+@router.get("", response_model=List[Analytics])
 async def list_analytics(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     return await get_analytics_by_user(db, user_id=current_user.id)
 
-@router.post("/", response_model=Analytics, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=Analytics, status_code=status.HTTP_201_CREATED)
 async def create_analytics(
     event_in: AnalyticsCreate,
     db: AsyncSession = Depends(get_db),

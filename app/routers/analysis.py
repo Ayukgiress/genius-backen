@@ -16,7 +16,7 @@ router = APIRouter(prefix="/analysis", tags=["analysis"])
 # Rate limiter instance for AI endpoints
 limiter = Limiter(key_func=get_remote_address)
 
-@router.get("/", response_model=List[Analysis])
+@router.get("", response_model=List[Analysis])
 async def list_analyses(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -31,7 +31,7 @@ async def list_analyses(
     )
     return result.scalars().all()
 
-@router.post("/", response_model=Analysis, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=Analysis, status_code=status.HTTP_201_CREATED)
 async def create_resume_analysis(
     analysis_in: AnalysisCreate,
     db: AsyncSession = Depends(get_db),

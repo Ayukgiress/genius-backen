@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/interviews", tags=["interviews"])
 
-@router.get("/", response_model=List[InterviewResponse])
+@router.get("", response_model=List[InterviewResponse])
 async def list_interviews(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -46,7 +46,7 @@ async def get_interview_by_id(
     interview.__dict__['messages'] = await get_interview_messages(db, interview.id)
     return interview
 
-@router.post("/", response_model=InterviewResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=InterviewResponse, status_code=status.HTTP_201_CREATED)
 async def create_new_interview(
     interview_in: InterviewCreate,
     db: AsyncSession = Depends(get_db),
