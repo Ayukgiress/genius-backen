@@ -4,12 +4,12 @@ from typing import Optional
 class Settings(BaseSettings):
     PROJECT_NAME: str = "Genius API"
     VERSION: str = "1.0.0"
-    DATABASE_URL: str = "postgresql://genius_jjum_user:sHKb4XNigYxgHAIcvjo6pNIIUh1nvyhj@dpg-d7ivqcgsfn5c738n50hg-a.oregon-postgres.render.com/genius_jjum"
-    REDIS_URL: str = "redis://localhost:6379/0"
+    DATABASE_URL: Optional[str] = None
+    REDIS_URL: Optional[str] = None
     S3_BUCKET: Optional[str] = None
     OPENAI_API_KEY: Optional[str] = None
     GEMINI_API_KEY: Optional[str] = None
-    SECRET_KEY: str = "your-secret-key"
+    SECRET_KEY: str
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     
@@ -22,12 +22,12 @@ class Settings(BaseSettings):
     SMTP_FROM_NAME: str = "Genius API"
     
     # Frontend URL for verification links
-    FRONTEND_URL: str = "https://genuis-pi.vercel.app"
+    FRONTEND_URL: Optional[str] = None
     
     # Google OAuth settings
     GOOGLE_CLIENT_ID: Optional[str] = None
     GOOGLE_CLIENT_SECRET: Optional[str] = None
-    GOOGLE_REDIRECT_URI: str = "https://genuis-pi.vercel.app/auth/google/callback"
+    GOOGLE_REDIRECT_URI: Optional[str] = None
     
     # Cloudinary Configuration
     CLOUDINARY_CLOUD_NAME: Optional[str] = None
