@@ -4,10 +4,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.schemas.job import JobResponse, JobMatchResponse, JobSearchParams
 from app.schemas.kanban import KanbanCardCreate
 from app.services.job_scraper import job_service
+from app.services.interview import interview_service
 from app.crud import kanban as crud_kanban
 from app.crud import user as crud_user
+from app.crud import interview as crud_interview
 from app.routers.deps import get_db, get_current_user
 from app.models.user import User
+from app.schemas.interview import InterviewCreate, InterviewStartRequest
 from datetime import datetime
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -127,7 +130,66 @@ async def get_job(job_id: str):
     """Get a specific job by ID."""
     all_jobs = await job_service.scraper.scrape_all_jobs()
     all_jobs.extend(job_service._sample_jobs)
-    job = next((j for j in all_jobs if j["id"] == job_id), None)
+
+    # Remove duplicates by ID, preferring live jobs over sample jobs
+    seen_ids = set()
+    unique_jobs = []
+    for job in all_jobs:
+        if job["id"] not in seen_ids:
+            seen_ids.add(job["id"])
+            unique_jobs.append(job)
+
+    job = next((j for j in unique_jobs if j["id"] == job_id), None)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
+
+
+@router.post("/{job_id}/start-interview")
+async def start_job_interview(
+    job_id: str,
+    request: InterviewStartRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Start an AI interview for a specific job."""
+    # Get resume content if provided
+    resume_content = None
+    if request.resume_id:
+        from app.crud.resume import get_resume as crud_get_resume
+        resume = await crud_get_resume(db, request.resume_id)
+        if resume and resume.user_id == current_user.id:
+            resume_content = resume.content
+
+    try:
+        # Start the interview with AI service
+        interview_data = await interview_service.start_interview(job_id, resume_content)
+
+        # Create interview record in database
+        interview_create = InterviewCreate(job_id=job_id)
+        db_interview = await crud_interview.create_interview(db, interview_create, current_user.id)
+
+        # Save initial AI message
+        from app.schemas.interview import InterviewMessageCreate
+        initial_message = InterviewMessageCreate(
+            role="assistant",
+            content=interview_data["initial_message"]
+        )
+        await crud_interview.create_interview_message(db, db_interview.id, initial_message)
+
+        # Get the complete interview with messages
+        interview = await crud_interview.get_interview(db, db_interview.id)
+        interview.messages = await crud_interview.get_interview_messages(db, db_interview.id)
+
+        return {
+            "interview": interview,
+            "job_info": {
+                "title": interview_data["job_title"],
+                "company": interview_data["company"]
+            }
+        }
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to start interview: {str(e)}")

@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: Optional[str] = None
     SMTP_FROM_EMAIL: str = "noreply@genius.com"
     SMTP_FROM_NAME: str = "Genius API"
+
+    # Alternative Email Providers
+    RESEND_API_KEY: Optional[str] = None
+    SENDGRID_API_KEY: Optional[str] = None
+    EMAIL_PROVIDER: str = "gmail"  # Options: gmail, resend, sendgrid
     
     # Frontend URL for verification links
     FRONTEND_URL: Optional[str] = None

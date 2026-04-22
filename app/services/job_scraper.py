@@ -387,33 +387,43 @@ class JobService:
     ) -> List[Dict]:
         """Search jobs with filters."""
         if use_live_data:
-            jobs = await self.scraper.scrape_all_jobs()
+            # Combine live jobs and sample jobs, preferring live jobs for duplicates
+            live_jobs = await self.scraper.scrape_all_jobs()
+            all_jobs = live_jobs + self._sample_jobs.copy()
+
+            # Remove duplicates by ID, preferring live jobs over sample jobs
+            seen_ids = set()
+            jobs = []
+            for job in all_jobs:
+                if job["id"] not in seen_ids:
+                    seen_ids.add(job["id"])
+                    jobs.append(job)
         else:
             jobs = self._sample_jobs.copy()
-        
+
         if query:
             query_lower = query.lower()
             jobs = [
-                j for j in jobs 
-                if query_lower in j["title"].lower() 
+                j for j in jobs
+                if query_lower in j["title"].lower()
                 or query_lower in j["company"].lower()
                 or query_lower in j["description"].lower()
                 or query_lower in j.get("requirements", "").lower()
             ]
-        
+
         if location:
             location_lower = location.lower()
             jobs = [
-                j for j in jobs 
+                j for j in jobs
                 if location_lower in j["location"].lower()
             ]
-        
+
         if remote is not None:
             jobs = [j for j in jobs if j["is_remote"] == remote]
-        
+
         if job_type:
             jobs = [j for j in jobs if j["job_type"] == job_type]
-        
+
         start = (page - 1) * limit
         end = start + limit
         return jobs[start:end]
@@ -424,10 +434,18 @@ class JobService:
         resume_content: str,
     ) -> Optional[JobMatchResponse]:
         """Match a job with a resume and return detailed results."""
-        all_jobs = await self.scraper.scrape_all_jobs()
-        all_jobs.extend(self._sample_jobs)
-        
-        job = next((j for j in all_jobs if j["id"] == job_id), None)
+        live_jobs = await self.scraper.scrape_all_jobs()
+        all_jobs = live_jobs + self._sample_jobs
+
+        # Remove duplicates by ID, preferring live jobs over sample jobs
+        seen_ids = set()
+        unique_jobs = []
+        for job in all_jobs:
+            if job["id"] not in seen_ids:
+                seen_ids.add(job["id"])
+                unique_jobs.append(job)
+
+        job = next((j for j in unique_jobs if j["id"] == job_id), None)
         if not job:
             return None
         
