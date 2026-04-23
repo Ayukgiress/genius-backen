@@ -44,12 +44,10 @@ async def startup():
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all, checkfirst=True)
             # Add missing columns for existing tables
-            await conn.execute(text("""
-                ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_customer_id VARCHAR(255);
-                ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_plan VARCHAR(50) DEFAULT 'free';
-                ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_status VARCHAR(50) DEFAULT 'inactive';
-                ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_id VARCHAR(255);
-            """))
+            await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_customer_id VARCHAR(255);"))
+            await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_plan VARCHAR(50) DEFAULT 'free';"))
+            await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_status VARCHAR(50) DEFAULT 'inactive';"))
+            await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_id VARCHAR(255);"))
         print("Database tables created/updated successfully!")
     except Exception as e:
         print(f"Error during startup: {e}")
