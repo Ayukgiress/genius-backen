@@ -25,3 +25,4 @@ aiohttp
 gunicorn
 uvicorn
 stripe
+mangum

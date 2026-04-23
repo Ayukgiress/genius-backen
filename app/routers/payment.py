@@ -9,8 +9,6 @@ import stripe
 
 router = APIRouter(prefix="/payment", tags=["payment"])
 
-stripe.api_key = settings.STRIPE_SECRET_KEY
-
 @router.post("/create-checkout-session")
 async def create_checkout_session(
     current_user: User = Depends(get_current_user),
@@ -19,6 +17,8 @@ async def create_checkout_session(
     """Create a Stripe Checkout session for subscription."""
     if not settings.STRIPE_SECRET_KEY:
         raise HTTPException(status_code=500, detail="Stripe not configured")
+    
+    stripe.api_key = settings.STRIPE_SECRET_KEY
 
     try:
         # Create or retrieve Stripe customer
@@ -64,6 +64,14 @@ async def create_checkout_session(
 @router.post("/webhook")
 async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     """Handle Stripe webhook events."""
+    if not settings.STRIPE_SECRET_KEY:
+        raise HTTPException(status_code=500, detail="Stripe not configured")
+    
+    if not settings.STRIPE_WEBHOOK_SECRET:
+        raise HTTPException(status_code=500, detail="Stripe Webhook not configured")
+    
+    stripe.api_key = settings.STRIPE_SECRET_KEY
+    
     payload = await request.body()
     sig_header = request.headers.get('stripe-signature')
 

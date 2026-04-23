@@ -65,3 +65,7 @@ app.include_router(payment_router)
 @app.get("/")
 async def root():
     return {"message": "Welcome to Genius API"}
+
+# Handler for Vercel deployment
+from mangum import Mangum
+handler = Mangum(app, lifespan="off")
