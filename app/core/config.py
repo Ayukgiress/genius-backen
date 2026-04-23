@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     # Groq AI Configuration (free tier)
     GROQ_API_KEY: Optional[str] = None
 
+    # Stripe Configuration
+    STRIPE_PUBLISHABLE_KEY: Optional[str] = None
+    STRIPE_SECRET_KEY: Optional[str] = None
+    STRIPE_WEBHOOK_SECRET: Optional[str] = None
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 settings = Settings()

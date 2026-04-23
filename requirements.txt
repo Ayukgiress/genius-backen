@@ -24,3 +24,4 @@ groq
 aiohttp
 gunicorn
 uvicorn
+stripe

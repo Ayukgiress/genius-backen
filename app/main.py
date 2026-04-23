@@ -15,6 +15,7 @@ from app.routers.kanban import router as kanban_router
 from app.routers.jobs import router as jobs_router
 from app.routers.interviews import router as interviews_router
 from app.routers.preferences import router as preferences_router
+from app.routers.payment import router as payment_router
 from app.db.session import engine, Base
 from app.core.config import settings
 import app.models.user
@@ -53,6 +54,7 @@ app.include_router(analytics.router)
 app.include_router(jobs_router)
 app.include_router(interviews_router)
 app.include_router(preferences_router)
+app.include_router(payment_router)
 
 @app.get("/")
 async def root():
