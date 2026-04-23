@@ -1,4 +1,5 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field
 from typing import Optional
 
 class Settings(BaseSettings):
@@ -43,8 +44,8 @@ class Settings(BaseSettings):
     GROQ_API_KEY: Optional[str] = None
 
     # Stripe Configuration
-    STRIPE_PUBLISHABLE_KEY: Optional[str] = None
-    STRIPE_SECRET_KEY: Optional[str] = None
+    STRIPE_PUBLISHABLE_KEY: Optional[str] = Field(default=None, env="PUBLISHABLE_KEY")
+    STRIPE_SECRET_KEY: Optional[str] = Field(default=None, env="SECRET_KEY_STRIPE")
     STRIPE_WEBHOOK_SECRET: Optional[str] = None
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
