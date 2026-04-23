@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 import logging
 
 # Patch passlib to work with bcrypt 4.0.0+
@@ -42,7 +43,14 @@ async def startup():
     try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all, checkfirst=True)
-        print("Database tables created successfully!")
+            # Add missing columns for existing tables
+            await conn.execute(text("""
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_customer_id VARCHAR(255);
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_plan VARCHAR(50) DEFAULT 'free';
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_status VARCHAR(50) DEFAULT 'inactive';
+                ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_id VARCHAR(255);
+            """))
+        print("Database tables created/updated successfully!")
     except Exception as e:
         print(f"Error during startup: {e}")
 
