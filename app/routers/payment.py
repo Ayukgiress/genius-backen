@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.db.session import get_db
@@ -23,9 +24,10 @@ async def create_checkout_session(
     try:
         # Create or retrieve Stripe customer
         if current_user.stripe_customer_id:
-            customer = stripe.Customer.retrieve(current_user.stripe_customer_id)
+            customer = await run_in_threadpool(stripe.Customer.retrieve, current_user.stripe_customer_id)
         else:
-            customer = stripe.Customer.create(
+            customer = await run_in_threadpool(
+                stripe.Customer.create,
                 email=current_user.email,
                 name=current_user.name,
             )
@@ -34,7 +36,8 @@ async def create_checkout_session(
             await db.commit()
 
         # Create checkout session for Pro plan ($19/month)
-        checkout_session = stripe.checkout.Session.create(
+        checkout_session = await run_in_threadpool(
+            stripe.checkout.Session.create,
             customer=customer.id,
             payment_method_types=['card'],
             line_items=[{
@@ -76,7 +79,8 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     sig_header = request.headers.get('stripe-signature')
 
     try:
-        event = stripe.Webhook.construct_event(
+        event = await run_in_threadpool(
+            stripe.Webhook.construct_event,
             payload, sig_header, settings.STRIPE_WEBHOOK_SECRET
         )
     except ValueError as e:
@@ -91,10 +95,10 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         subscription_id = session['subscription']
 
         # Update user subscription
-        user = await db.execute(
+        result = await db.execute(
             select(User).where(User.stripe_customer_id == customer_id)
         )
-        user = user.scalar_one_or_none()
+        user = result.scalar_one_or_none()
         if user:
             user.subscription_plan = "pro"
             user.subscription_status = "active"
@@ -110,10 +114,10 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         # Payment failed, subscription might be past_due
         invoice = event['data']['object']
         customer_id = invoice['customer']
-        user = await db.execute(
+        result = await db.execute(
             select(User).where(User.stripe_customer_id == customer_id)
         )
-        user = user.scalar_one_or_none()
+        user = result.scalar_one_or_none()
         if user:
             user.subscription_status = "past_due"
             db.add(user)
@@ -123,10 +127,10 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         # Subscription canceled
         subscription = event['data']['object']
         customer_id = subscription['customer']
-        user = await db.execute(
+        result = await db.execute(
             select(User).where(User.stripe_customer_id == customer_id)
         )
-        user = user.scalar_one_or_none()
+        user = result.scalar_one_or_none()
         if user:
             user.subscription_plan = "free"
             user.subscription_status = "inactive"
