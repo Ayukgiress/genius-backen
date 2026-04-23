@@ -1,9 +1,15 @@
-# Additional TODO: Fix DB schema issue - COMPLETE ✅
+# Database Column Issue Fix
 
-**Summary:** 
-- Dropped/recreated 'genius' PostgreSQL DB.
-- Restarted uvicorn server.
-- Startup logs show tables detected/created: users, resumes, kanban_boards/cards, analyses, analytics.
-- Application startup complete. Original startup error fixed, DB schema now matches models (name column present).
+## Problem
+Production database missing subscription columns added to User model, causing login failures.
 
-Server running at http://127.0.0.1:8000. Test /auth/register.
+## Solution
+- Added defer() options to all user SELECT queries in crud/user.py to exclude new columns until DB is migrated
+- ALTER TABLE commands in app startup to add columns on deployment
+- Alembic configured for future migrations
+
+## Next Steps
+1. Commit and push the defer changes
+2. Deploy on Render - login should work
+3. ALTER will add columns during startup
+4. Remove defer options after confirming columns exist
