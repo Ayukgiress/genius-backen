@@ -18,12 +18,6 @@ def get_password_hash(password):
 async def get_user(db: AsyncSession, user_id: int):
     result = await db.execute(
         select(User)
-        .options(
-            defer(User.stripe_customer_id),
-            defer(User.subscription_plan),
-            defer(User.subscription_status),
-            defer(User.subscription_id)
-        )
         .where(User.id == user_id)
     )
     return result.scalar_one_or_none()
@@ -31,12 +25,6 @@ async def get_user(db: AsyncSession, user_id: int):
 async def get_user_by_email(db: AsyncSession, email: str):
     result = await db.execute(
         select(User)
-        .options(
-            defer(User.stripe_customer_id),
-            defer(User.subscription_plan),
-            defer(User.subscription_status),
-            defer(User.subscription_id)
-        )
         .where(User.email == email)
     )
     return result.scalar_one_or_none()
@@ -89,12 +77,6 @@ async def get_user_by_google_id(db: AsyncSession, google_id: str):
     """Get a user by Google ID."""
     result = await db.execute(
         select(User)
-        .options(
-            defer(User.stripe_customer_id),
-            defer(User.subscription_plan),
-            defer(User.subscription_status),
-            defer(User.subscription_id)
-        )
         .where(User.google_id == google_id)
     )
     return result.scalar_one_or_none()
@@ -140,12 +122,6 @@ async def update_career_preferences(db: AsyncSession, user_id: int, preferences:
     """Update user's career preferences."""
     result = await db.execute(
         select(User)
-        .options(
-            defer(User.stripe_customer_id),
-            defer(User.subscription_plan),
-            defer(User.subscription_status),
-            defer(User.subscription_id)
-        )
         .where(User.id == user_id)
     )
     user = result.scalar_one_or_none()
