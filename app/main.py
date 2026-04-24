@@ -53,14 +53,14 @@ async def startup():
         print(f"Error during startup: {e}")
 
 app.include_router(auth.router)
-app.include_router(resumes.router)
-app.include_router(kanban_router)
-app.include_router(analysis.router)
-app.include_router(analytics.router)
-app.include_router(jobs_router)
-app.include_router(interviews_router)
-app.include_router(preferences_router)
-app.include_router(payment_router)
+app.include_router(resumes.router, prefix="/api")
+app.include_router(kanban_router, prefix="/api")
+app.include_router(analysis.router, prefix="/api")
+app.include_router(analytics.router, prefix="/api")
+app.include_router(jobs_router, prefix="/api")
+app.include_router(interviews_router, prefix="/api")
+app.include_router(preferences_router, prefix="/api")
+app.include_router(payment_router, prefix="/api")
 
 @app.get("/")
 async def root():
