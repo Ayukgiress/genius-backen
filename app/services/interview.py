@@ -11,6 +11,7 @@ class InterviewService:
 
     def __init__(self):
         self.groq_client = None
+        self.openai_client = None
         if settings.GROQ_API_KEY:
             try:
                 from groq import AsyncGroq
@@ -18,6 +19,46 @@ class InterviewService:
                 logger.info("InterviewService initialized with Groq client")
             except ImportError:
                 logger.warning("Groq package not installed for InterviewService")
+        
+        if settings.OPENAI_API_KEY:
+            try:
+                from openai import AsyncOpenAI
+                self.openai_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+                logger.info("InterviewService initialized with OpenAI client")
+            except ImportError:
+                logger.warning("OpenAI package not installed for InterviewService")
+
+    async def transcribe_audio(self, audio_file: Any) -> str:
+        """Transcribe audio using Groq Whisper"""
+        if not self.groq_client:
+            raise ValueError("Groq client not configured")
+        
+        try:
+            translation = await self.groq_client.audio.transcriptions.create(
+                file=audio_file,
+                model="whisper-large-v3",
+                response_format="text"
+            )
+            return translation
+        except Exception as e:
+            logger.error(f"STT error: {e}")
+            raise e
+
+    async def generate_speech(self, text: str) -> bytes:
+        """Generate speech using OpenAI TTS"""
+        if not self.openai_client:
+            raise ValueError("OpenAI client not configured")
+        
+        try:
+            response = await self.openai_client.audio.speech.create(
+                model="tts-1",
+                voice="alloy",
+                input=text
+            )
+            return await response.read()
+        except Exception as e:
+            logger.error(f"TTS error: {e}")
+            raise e
 
     async def start_interview(self, job_id: str, resume_content: Optional[str] = None) -> Dict[str, Any]:
         """

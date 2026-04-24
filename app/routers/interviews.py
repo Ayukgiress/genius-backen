@@ -1,7 +1,9 @@
 import logging
-from fastapi import APIRouter, Depends, HTTPException, status
+import base64
+import io
+from fastapi import APIRouter, Depends, HTTPException, status, WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import List
+from typing import List, Optional
 from app.db.session import get_db
 from app.routers.deps import get_current_user
 from app.schemas.user import User
@@ -165,3 +167,83 @@ async def complete_interview(
 
     updated_interview = await update_interview_status(db, interview_id, "completed")
     return {"message": "Interview completed", "interview": updated_interview}
+@router.websocket("/{interview_id}/talk")
+async def interview_talk_websocket(
+    websocket: WebSocket,
+    interview_id: int,
+    token: Optional[str] = None
+):
+    """
+    WebSocket for speech-to-speech interview.
+    Expects audio blobs and returns JSON with text and base64 audio.
+    """
+    await websocket.accept()
+    
+    # Simple token validation (to be improved based on auth implementation)
+    db_gen = get_db()
+    db = await anext(db_gen)
+    
+    try:
+        interview = await get_interview(db, interview_id)
+        if not interview:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+
+        while True:
+            # Receive data from client
+            data = await websocket.receive_json()
+            
+            if "audio" in data:
+                # 1. Decode base64 audio from client
+                audio_data = base64.b64decode(data["audio"])
+                audio_file = io.BytesIO(audio_data)
+                audio_file.name = "recording.webm"
+                
+                # 2. Transcribe using Groq
+                user_text = await interview_service.transcribe_audio(audio_file)
+                
+                if not user_text or len(user_text.strip()) < 2:
+                    continue
+
+                # 3. Save user message to DB
+                user_msg_in = InterviewMessageCreate(role="user", content=user_text)
+                await create_interview_message(db, interview_id, user_msg_in)
+                
+                # 4. Get conversation history
+                messages = await get_interview_messages(db, interview_id)
+                conversation_history = [
+                    {"role": msg.role, "content": msg.content} for msg in messages
+                ]
+                
+                # 5. Generate AI response
+                ai_text = await interview_service.continue_interview(
+                    conversation_history,
+                    interview.job_id
+                )
+                
+                # 6. Save AI message to DB
+                ai_msg_in = InterviewMessageCreate(role="assistant", content=ai_text)
+                await create_interview_message(db, interview_id, ai_msg_in)
+                
+                # 7. Generate speech from AI response
+                ai_audio_bytes = await interview_service.generate_speech(ai_text)
+                ai_audio_base64 = base64.b64encode(ai_audio_bytes).decode('utf-8')
+                
+                # 8. Send back to client
+                await websocket.send_json({
+                    "user_text": user_text,
+                    "ai_text": ai_text,
+                    "ai_audio": ai_audio_base64
+                })
+                
+            elif "type" in data and data["type"] == "ping":
+                await websocket.send_json({"type": "pong"})
+
+    except WebSocketDisconnect:
+        logger.info(f"WebSocket disconnected for interview {interview_id}")
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+        try:
+            await websocket.send_json({"error": str(e)})
+        except:
+            pass

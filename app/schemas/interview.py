@@ -13,6 +13,7 @@ class InterviewMessageResponse(InterviewMessageBase):
     id: int
     interview_id: int
     created_at: datetime
+    audio_content: Optional[str] = None  # Base64 encoded audio
 
     class Config:
         from_attributes = True
