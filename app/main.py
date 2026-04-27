@@ -11,7 +11,7 @@ try:
 except ImportError:
     pass
 
-from app.routers import auth, resumes, analysis, analytics
+from app.routers import auth, resumes, analysis, analytics, letters
 from app.routers.kanban import router as kanban_router
 from app.routers.jobs import router as jobs_router
 from app.routers.interviews import router as interviews_router
@@ -26,6 +26,8 @@ import app.models.kanban
 import app.models.resume
 import app.models.job
 import app.models.interview
+import app.models.user_usage
+import app.models.letter
 
 app = FastAPI(title="Genius API", version="1.0.0")
 
@@ -61,6 +63,7 @@ app.include_router(jobs_router, prefix="/api")
 app.include_router(interviews_router, prefix="/api")
 app.include_router(preferences_router, prefix="/api")
 app.include_router(payment_router, prefix="/api")
+app.include_router(letters.router, prefix="/api")
 
 @app.get("/")
 async def root():

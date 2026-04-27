@@ -9,6 +9,7 @@ from app.schemas.user import User
 from app.schemas.analysis import Analysis, AnalysisCreate, AnalysisUpdate, FocusArea
 from app.crud.analysis import get_analysis, get_analysis_by_resume, create_analysis, update_analysis
 from app.crud.resume import get_resume
+from app.crud.user_usage import get_current_month_usage, increment_usage
 from app.services.ai_analysis import resume_analysis_service, MAX_RESUME_LENGTH
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
@@ -111,12 +112,22 @@ async def analyze_resume_with_ai(
     """
     Analyze a resume using AI (Gemini) and save the analysis results.
     Rate limited to 10 requests per minute per IP.
+    Limited to 3 analyses per month for free users.
     """
     # Verify the resume belongs to the current user
     resume = await get_resume(db, resume_id)
     if not resume or resume.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Resume not found")
-    
+
+    # Check usage limits for free users
+    if current_user.subscription_plan == "free":
+        current_usage = await get_current_month_usage(db, current_user.id, "ai_analysis")
+        if current_usage >= 3:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Free users are limited to 3 AI resume analyses per month. Please upgrade to Pro for unlimited access."
+            )
+
     # Check if resume has content to analyze
     if not resume.content:
         raise HTTPException(status_code=400, detail="Resume has no content to analyze")
@@ -142,14 +153,20 @@ async def analyze_resume_with_ai(
                 result=ai_result,
                 feedback=ai_result.get("summary", "")
             )
-            return await update_analysis(db, existing, analysis_update)
+            analysis = await update_analysis(db, existing, analysis_update)
+
+            # Increment usage counter for free users
+            if current_user.subscription_plan == "free":
+                await increment_usage(db, current_user.id, "ai_analysis")
+
+            return analysis
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"AI analysis failed: {str(e)}")
     
     try:
         # Generate AI analysis
         ai_result = await resume_analysis_service.analyze_resume(resume.content)
-        
+
         # Create new analysis with AI results
         analysis_in = AnalysisCreate(
             resume_id=resume_id,
@@ -157,7 +174,13 @@ async def analyze_resume_with_ai(
             result=ai_result,
             feedback=ai_result.get("summary", "")
         )
-        return await create_analysis(db, analysis_in)
+        analysis = await create_analysis(db, analysis_in)
+
+        # Increment usage counter for free users
+        if current_user.subscription_plan == "free":
+            await increment_usage(db, current_user.id, "ai_analysis")
+
+        return analysis
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -177,27 +200,42 @@ async def get_resume_suggestions(
     Get AI-generated suggestions for improving a resume.
     Optionally specify a focus area (summary, experience, skills, education).
     Rate limited to 10 requests per minute per IP.
+    Limited to 3 analyses per month for free users.
     """
     # Verify the resume belongs to the current user
     resume = await get_resume(db, resume_id)
     if not resume or resume.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Resume not found")
-    
+
+    # Check usage limits for free users
+    if current_user.subscription_plan == "free":
+        current_usage = await get_current_month_usage(db, current_user.id, "ai_analysis")
+        if current_usage >= 3:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Free users are limited to 3 AI resume analyses per month. Please upgrade to Pro for unlimited access."
+            )
+
     # Check if resume has content
     if not resume.content:
         raise HTTPException(status_code=400, detail="Resume has no content")
-    
+
     if len(resume.content) > MAX_RESUME_LENGTH:
         raise HTTPException(
             status_code=400,
             detail=f"Resume content exceeds maximum length of {MAX_RESUME_LENGTH} characters"
         )
-    
+
     try:
         suggestions = await resume_analysis_service.generate_suggestions(
-            resume.content, 
+            resume.content,
             focus_area=focus_area
         )
+
+        # Increment usage counter for free users
+        if current_user.subscription_plan == "free":
+            await increment_usage(db, current_user.id, "ai_analysis")
+
         return suggestions
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from typing import Optional, List
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.schemas.job import JobResponse, JobMatchResponse, JobSearchParams
@@ -8,6 +8,7 @@ from app.services.interview import interview_service
 from app.crud import kanban as crud_kanban
 from app.crud import user as crud_user
 from app.crud import interview as crud_interview
+from app.crud.user_usage import get_current_month_usage, increment_usage
 from app.routers.deps import get_db, get_current_user
 from app.models.user import User
 from app.schemas.interview import InterviewCreate, InterviewStartRequest
@@ -46,22 +47,36 @@ async def get_recommendations(
     current_user: User = Depends(get_current_user),
 ):
     """Get AI-matched job recommendations based on user's resume and career preferences."""
+    # Check usage limits for free users
+    if current_user.subscription_plan == "free":
+        current_usage = await get_current_month_usage(db, current_user.id, "job_matching")
+        if current_usage >= 5:  # Allow 5 job matching requests per month for free users
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Free users are limited to 5 job matching requests per month. Please upgrade to Pro for unlimited access."
+            )
+
     resume_content = ""
     career_preferences = None
-    
+
     if resume_id:
         from app.crud.resume import get_resume as crud_get_resume
         resume = await crud_get_resume(db, resume_id)
         if resume and resume.user_id == current_user.id:
             resume_content = resume.content or ""
-    
+
     if current_user.career_preferences:
         career_preferences = current_user.career_preferences
-    
+
     recommendations = await job_service.get_recommendations(
-        resume_content, 
+        resume_content,
         career_preferences=career_preferences
     )
+
+    # Increment usage counter for free users
+    if current_user.subscription_plan == "free":
+        await increment_usage(db, current_user.id, "job_matching")
+
     return recommendations
 
 
@@ -79,21 +94,34 @@ async def match_job(
     current_user: User = Depends(get_current_user),
 ):
     """Match a specific job with a resume."""
+    # Check usage limits for free users
+    if current_user.subscription_plan == "free":
+        current_usage = await get_current_month_usage(db, current_user.id, "job_matching")
+        if current_usage >= 5:  # Allow 5 job matching requests per month for free users
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Free users are limited to 5 job matching requests per month. Please upgrade to Pro for unlimited access."
+            )
+
     from app.crud.resume import get_resume as crud_get_resume
-    
+
     resume = await crud_get_resume(db, resume_id)
     if not resume:
         raise HTTPException(status_code=404, detail="Resume not found")
-    
+
     if resume.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not authorized to access this resume")
-    
+
     resume_content = resume.content or ""
     matched_job = await job_service.match_with_resume(job_id, resume_content)
-    
+
     if not matched_job:
         raise HTTPException(status_code=404, detail="Job not found")
-    
+
+    # Increment usage counter for free users
+    if current_user.subscription_plan == "free":
+        await increment_usage(db, current_user.id, "job_matching")
+
     return matched_job
 
 
