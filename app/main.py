@@ -1,5 +1,6 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 import logging
 
@@ -31,13 +32,33 @@ import app.models.letter
 
 app = FastAPI(title="Genius API", version="1.0.0")
 
+# CORS Configuration
+origins = [
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "https://genuis-pi.vercel.app",
+    "https://genius-pi.vercel.app",
+]
+
+if settings.FRONTEND_URL:
+    if settings.FRONTEND_URL not in origins:
+        origins.append(settings.FRONTEND_URL)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logging.error(f"Global error: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal Server Error", "message": str(exc)},
+    )
 
 @app.on_event("startup")
 async def startup():

@@ -147,6 +147,7 @@ async def add_to_kanban(
         title=job.title,
         description=job.description,
         status=status,
+        board_id=board_id
     )
     
     card = await crud_kanban.create_card(db, card_data)
