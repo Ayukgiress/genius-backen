@@ -25,6 +25,8 @@ def _send_email_sync(email: str, subject: str, html_content: str, text_content: 
             return _send_via_resend(email, subject, html_content, text_content)
         elif settings.EMAIL_PROVIDER == "sendgrid" and settings.SENDGRID_API_KEY:
             return _send_via_sendgrid(email, subject, html_content, text_content)
+        elif settings.EMAIL_PROVIDER == "brevo" and settings.BREVO_API_KEY:
+            return _send_via_brevo(email, subject, html_content, text_content)
         else:
             return _send_via_smtp(email, subject, html_content, text_content)
     except Exception as e:
@@ -130,6 +132,36 @@ def _send_via_sendgrid(email: str, subject: str, html_content: str, text_content
                 return False
     except Exception as e:
         print(f"Error in SendGrid email send: {e}")
+        return False
+
+
+def _send_via_brevo(email: str, subject: str, html_content: str, text_content: str) -> bool:
+    """Send email via Brevo API."""
+    try:
+        with httpx.Client() as client:
+            response = client.post(
+                "https://api.brevo.com/v3/smtp/email",
+                headers={
+                    "api-key": settings.BREVO_API_KEY,
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "sender": {"email": settings.SMTP_FROM_EMAIL, "name": settings.SMTP_FROM_NAME},
+                    "to": [{"email": email}],
+                    "subject": subject,
+                    "htmlContent": html_content,
+                    "textContent": text_content
+                },
+                timeout=10
+            )
+            if response.status_code == 201:
+                print(f"Email sent successfully to {email} via Brevo")
+                return True
+            else:
+                print(f"Brevo API error: {response.status_code} - {response.text}")
+                return False
+    except Exception as e:
+        print(f"Error in Brevo email send: {e}")
         return False
 
 

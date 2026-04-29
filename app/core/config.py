@@ -25,7 +25,8 @@ class Settings(BaseSettings):
     # Alternative Email Providers
     RESEND_API_KEY: Optional[str] = None
     SENDGRID_API_KEY: Optional[str] = None
-    EMAIL_PROVIDER: str = Field(default="gmail", validation_alias=AliasChoices("EMAIL_PROVIDER", "email_provider"))  # Options: gmail, resend, sendgrid
+    BREVO_API_KEY: Optional[str] = None
+    EMAIL_PROVIDER: str = Field(default="gmail", validation_alias=AliasChoices("EMAIL_PROVIDER", "email_provider"))  # Options: gmail, resend, sendgrid, brevo
 
     def __init__(self, **data):
         super().__init__(**data)
@@ -34,6 +35,8 @@ class Settings(BaseSettings):
             self.EMAIL_PROVIDER = "resend"
         elif self.SENDGRID_API_KEY and self.EMAIL_PROVIDER == "gmail":
             self.EMAIL_PROVIDER = "sendgrid"
+        elif self.BREVO_API_KEY and self.EMAIL_PROVIDER == "gmail":
+            self.EMAIL_PROVIDER = "brevo"
     
     # Frontend URL for verification links
     FRONTEND_URL: Optional[str] = None
