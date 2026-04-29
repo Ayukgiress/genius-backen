@@ -5,6 +5,7 @@ from email.mime.multipart import MIMEMultipart
 from typing import Optional
 import secrets
 from datetime import datetime, timedelta, timezone
+import httpx
 
 from app.core.config import settings
 
@@ -19,38 +20,116 @@ def generate_verification_token() -> tuple[str, datetime]:
 
 def _send_email_sync(email: str, subject: str, html_content: str, text_content: str) -> bool:
     """Synchronous email sending function to be run in thread pool."""
+    try:
+        if settings.EMAIL_PROVIDER == "resend" and settings.RESEND_API_KEY:
+            return _send_via_resend(email, subject, html_content, text_content)
+        elif settings.EMAIL_PROVIDER == "sendgrid" and settings.SENDGRID_API_KEY:
+            return _send_via_sendgrid(email, subject, html_content, text_content)
+        else:
+            return _send_via_smtp(email, subject, html_content, text_content)
+    except Exception as e:
+        print(f"Error in _send_email_sync: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def _send_via_smtp(email: str, subject: str, html_content: str, text_content: str) -> bool:
+    """Send email via SMTP (Gmail)."""
     import smtplib
     import ssl
     from email.mime.text import MIMEText
     from email.mime.multipart import MIMEMultipart
-    
+
     try:
         message = MIMEMultipart("alternative")
         message["Subject"] = subject
         message["From"] = f"{settings.SMTP_FROM_NAME} <{settings.SMTP_FROM_EMAIL}>"
         message["To"] = email
-        
+
         part1 = MIMEText(text_content, "plain")
         part2 = MIMEText(html_content, "html")
-        
+
         message.attach(part1)
         message.attach(part2)
-        
+
         context = ssl.create_default_context()
-        
+
         print(f"Attempting to login to {settings.SMTP_HOST}:{settings.SMTP_PORT} as {settings.SMTP_USER}")
-        
+
         with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
             server.starttls(context=context)
             server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
             server.sendmail(settings.SMTP_FROM_EMAIL, email, message.as_string())
-        
+
         print(f"Email sent successfully to {email}")
         return True
     except Exception as e:
-        print(f"Error in _send_email_sync: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"Error in SMTP email send: {e}")
+        return False
+
+
+def _send_via_resend(email: str, subject: str, html_content: str, text_content: str) -> bool:
+    """Send email via Resend API."""
+    try:
+        with httpx.Client() as client:
+            response = client.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {settings.RESEND_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "from": f"{settings.SMTP_FROM_NAME} <{settings.SMTP_FROM_EMAIL}>",
+                    "to": [email],
+                    "subject": subject,
+                    "html": html_content,
+                    "text": text_content
+                },
+                timeout=10
+            )
+            if response.status_code == 200:
+                print(f"Email sent successfully to {email} via Resend")
+                return True
+            else:
+                print(f"Resend API error: {response.status_code} - {response.text}")
+                return False
+    except Exception as e:
+        print(f"Error in Resend email send: {e}")
+        return False
+
+
+def _send_via_sendgrid(email: str, subject: str, html_content: str, text_content: str) -> bool:
+    """Send email via SendGrid API."""
+    try:
+        with httpx.Client() as client:
+            response = client.post(
+                "https://api.sendgrid.com/v3/mail/send",
+                headers={
+                    "Authorization": f"Bearer {settings.SENDGRID_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "personalizations": [{
+                        "to": [{"email": email}]
+                    }],
+                    "from": {"email": settings.SMTP_FROM_EMAIL, "name": settings.SMTP_FROM_NAME},
+                    "subject": subject,
+                    "content": [
+                        {"type": "text/plain", "value": text_content},
+                        {"type": "text/html", "value": html_content}
+                    ]
+                },
+                timeout=10
+            )
+            if response.status_code == 202:
+                print(f"Email sent successfully to {email} via SendGrid")
+                return True
+            else:
+                print(f"SendGrid API error: {response.status_code} - {response.text}")
+                return False
+    except Exception as e:
+        print(f"Error in SendGrid email send: {e}")
         return False
 
 

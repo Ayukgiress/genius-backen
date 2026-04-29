@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     # Alternative Email Providers
     RESEND_API_KEY: Optional[str] = None
     SENDGRID_API_KEY: Optional[str] = None
-    EMAIL_PROVIDER: str = "gmail"  # Options: gmail, resend, sendgrid
+    EMAIL_PROVIDER: str = Field(default="gmail", validation_alias=AliasChoices("EMAIL_PROVIDER", "email_provider"))  # Options: gmail, resend, sendgrid
     
     # Frontend URL for verification links
     FRONTEND_URL: Optional[str] = None
