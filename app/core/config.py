@@ -26,6 +26,14 @@ class Settings(BaseSettings):
     RESEND_API_KEY: Optional[str] = None
     SENDGRID_API_KEY: Optional[str] = None
     EMAIL_PROVIDER: str = Field(default="gmail", validation_alias=AliasChoices("EMAIL_PROVIDER", "email_provider"))  # Options: gmail, resend, sendgrid
+
+    def __init__(self, **data):
+        super().__init__(**data)
+        # Auto-select email provider based on available API keys
+        if self.RESEND_API_KEY and self.EMAIL_PROVIDER == "gmail":
+            self.EMAIL_PROVIDER = "resend"
+        elif self.SENDGRID_API_KEY and self.EMAIL_PROVIDER == "gmail":
+            self.EMAIL_PROVIDER = "sendgrid"
     
     # Frontend URL for verification links
     FRONTEND_URL: Optional[str] = None
