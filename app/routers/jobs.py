@@ -46,15 +46,17 @@ async def get_recommendations(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    print(f"[DEBUG] User {current_user.id} ({current_user.email}): plan={current_user.subscription_plan}, checking job_matching usage")
     """Get AI-matched job recommendations based on user's resume and career preferences."""
     # Check usage limits for free users
     if current_user.subscription_plan == "free":
         current_usage = await get_current_month_usage(db, current_user.id, "job_matching")
         if current_usage >= 5:  # Allow 5 job matching requests per month for free users
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Free users are limited to 5 job matching requests per month. Please upgrade to Pro for unlimited access."
-            )
+            return {
+                "recommendations": [],
+                "limit_reached": True,
+                "message": "Free users are limited to 5 job matching requests per month. Please upgrade to Pro for unlimited access."
+            }
 
     resume_content = ""
     career_preferences = None
@@ -77,7 +79,10 @@ async def get_recommendations(
     if current_user.subscription_plan == "free":
         await increment_usage(db, current_user.id, "job_matching")
 
-    return recommendations
+    return {
+        "recommendations": recommendations,
+        "limit_reached": False
+    }
 
 
 @router.get("/live-count")
@@ -98,10 +103,11 @@ async def match_job(
     if current_user.subscription_plan == "free":
         current_usage = await get_current_month_usage(db, current_user.id, "job_matching")
         if current_usage >= 5:  # Allow 5 job matching requests per month for free users
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Free users are limited to 5 job matching requests per month. Please upgrade to Pro for unlimited access."
-            )
+            return {
+                "job": None,
+                "limit_reached": True,
+                "message": "Free users are limited to 5 job matching requests per month. Please upgrade to Pro for unlimited access."
+            }
 
     from app.crud.resume import get_resume as crud_get_resume
 
@@ -122,7 +128,10 @@ async def match_job(
     if current_user.subscription_plan == "free":
         await increment_usage(db, current_user.id, "job_matching")
 
-    return matched_job
+    return {
+        "job": matched_job,
+        "limit_reached": False
+    }
 
 
 @router.post("/{job_id}/add-to-kanban")

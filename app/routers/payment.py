@@ -93,18 +93,25 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         session = event['data']['object']
         customer_id = session['customer']
         subscription_id = session['subscription']
-
-        # Update user subscription
         result = await db.execute(
             select(User).where(User.stripe_customer_id == customer_id)
         )
         user = result.scalar_one_or_none()
         if user:
+            # Set Pro subscription
             user.subscription_plan = "pro"
             user.subscription_status = "active"
             user.subscription_id = subscription_id
+            
+            # Reset job_matching usage for this month (automated fix for upgrade)
+            from app.crud.user_usage import reset_action_usage_for_month
+            from datetime import datetime
+            now = datetime.now()
+            await reset_action_usage_for_month(db, user.id, "job_matching", now.month, now.year)
+            
             db.add(user)
             await db.commit()
+            print(f"Pro upgrade & usage reset for user {user.id} ({user.email})")
 
     elif event['type'] == 'invoice.payment_succeeded':
         # Subscription renewed

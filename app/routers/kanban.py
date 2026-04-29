@@ -54,7 +54,6 @@ async def update_kanban_board(
         raise HTTPException(status_code=404, detail="Board not found")
     return await update_board(db, board, board_in)
 
-# Card routes
 @router.get("/boards/{board_id}/cards", response_model=List[KanbanCard])
 async def list_cards(
     board_id: int,

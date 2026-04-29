@@ -6,6 +6,8 @@ class UserBase(BaseModel):
     email: EmailStr
     name: Optional[str] = None
     bio: Optional[str] = None
+    subscription_plan: Optional[str] = "free"  # free, pro
+    subscription_status: Optional[str] = "inactive"  # inactive, active, canceled, past_due
 
 class UserCreate(UserBase):
     password: str
@@ -21,23 +23,15 @@ class UserUpdate(BaseModel):
     email: Optional[EmailStr] = None
     is_active: Optional[bool] = None
     bio: Optional[str] = None
-
-class CareerPreferences(BaseModel):
-    preferred_job_titles: List[str] = []
-    preferred_locations: List[str] = []
-    preferred_skills: List[str] = []
-    remote_only: bool = False
-    job_types: List[str] = []
-    min_salary: Optional[int] = None
-    keywords: List[str] = []
+    subscription_plan: Optional[str] = None
+    subscription_status: Optional[str] = None
 
 class User(UserBase):
     id: int
-    name: Optional[str] = None
-    bio: Optional[str] = None
-    is_active: bool
     is_verified: bool
-    career_preferences: Optional[CareerPreferences] = None
+    career_preferences: Optional[dict] = None
+    stripe_customer_id: Optional[str] = None
+    subscription_id: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -56,3 +50,4 @@ class UserCreateResponse(BaseModel):
 
 class VerificationResponse(BaseModel):
     message: str
+

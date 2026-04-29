@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional, List
-from app.schemas.user import CareerPreferences
+from app.schemas.preferences import CareerPreferences
 from app.routers.deps import get_db, get_current_user
 from app.models.user import User
 from app.crud import user as crud_user

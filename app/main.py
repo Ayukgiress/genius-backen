@@ -85,6 +85,8 @@ app.include_router(interviews_router, prefix="/api")
 app.include_router(preferences_router, prefix="/api")
 app.include_router(payment_router, prefix="/api")
 app.include_router(letters.router, prefix="/api")
+from app.routers.debug import router as debug_router
+app.include_router(debug_router, prefix="/api")
 
 @app.get("/")
 async def root():

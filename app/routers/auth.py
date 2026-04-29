@@ -325,8 +325,9 @@ async def resend_verification(email: str, db: AsyncSession = Depends(get_db)):
     
     return VerificationResponse(message="Verification email sent. Please check your inbox.")
 
+
 @router.post("/token", response_model=Token)
-async def login(
+async def login_for_access_token(
     db: AsyncSession = Depends(get_db), 
     form_data: OAuth2PasswordRequestForm = Depends()
 ):
@@ -344,10 +345,8 @@ async def login(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
         )
-    
-    # Check if email is verified
+
     if not user.is_verified:
-        print(f"Login failed: Email not verified for user {form_data.username}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Email not verified. Please verify your email address.",
@@ -356,13 +355,15 @@ async def login(
     access_token = create_access_token(subject=user.email)
     return {"access_token": access_token, "token_type": "bearer"}
 
+
 @router.get("/me", response_model=User)
-async def get_me(current_user: User = Depends(get_current_user)):
+async def read_user_me(current_user: User = Depends(get_current_user)):
+    """Get current user profile."""
     return current_user
 
 
-@router.patch("/me", response_model=User)
-async def update_me(
+@router.put("/me", response_model=User)
+async def update_user_me(
     name: Optional[str] = None,
     bio: Optional[str] = None,
     career_preferences: Optional[dict] = None,

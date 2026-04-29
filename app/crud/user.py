@@ -118,16 +118,6 @@ async def get_or_create_google_user(db: AsyncSession, email: str, name: str, goo
     return await create_google_user(db, email, name, google_id)
 
 
-async def update_career_preferences(db: AsyncSession, user_id: int, preferences: Optional[dict]):
-    """Update user's career preferences."""
-    result = await db.execute(
-        select(User)
-        .where(User.id == user_id)
-    )
-    user = result.scalar_one_or_none()
-    if user:
-        user.career_preferences = preferences
-        db.add(user)
-        await db.commit()
-        await db.refresh(user)
+
+
     return user
