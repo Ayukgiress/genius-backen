@@ -50,7 +50,11 @@ def run_migrations_offline() -> None:
     script output.
 
     """
-    url = settings.DATABASE_URL.replace("asyncpg", "psycopg2")
+    database_url = settings.DATABASE_URL
+    if not database_url:
+        raise ValueError("DATABASE_URL environment variable is not set!")
+    
+    url = database_url.replace("asyncpg", "psycopg2")
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -69,8 +73,12 @@ def run_migrations_online() -> None:
     and associate a connection with the context.
 
     """
+    database_url = settings.DATABASE_URL
+    if not database_url:
+        raise ValueError("DATABASE_URL environment variable is not set!")
+        
     connectable = engine_from_config(
-        {"sqlalchemy.url": settings.DATABASE_URL.replace("asyncpg", "psycopg2")},
+        {"sqlalchemy.url": database_url.replace("asyncpg", "psycopg2")},
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
