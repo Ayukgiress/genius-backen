@@ -68,11 +68,21 @@ def _send_via_smtp(email: str, subject: str, html_content: str, text_content: st
                 server.sendmail(settings.SMTP_FROM_EMAIL, email, message.as_string())
         else:
             # Port 587 is for STARTTLS
-            with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=settings.SMTP_TIMEOUT) as server:
-                if settings.SMTP_TLS:
-                    server.starttls(context=context)
-                server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
-                server.sendmail(settings.SMTP_FROM_EMAIL, email, message.as_string())
+            try:
+                with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=settings.SMTP_TIMEOUT) as server:
+                    if settings.SMTP_TLS:
+                        server.starttls(context=context)
+                    server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+                    server.sendmail(settings.SMTP_FROM_EMAIL, email, message.as_string())
+            except (OSError, smtplib.SMTPConnectError) as e:
+                print(f"Failed to connect on port {settings.SMTP_PORT}: {e}")
+                print(f"Attempting fallback to port 465 (SSL)...")
+                # Fallback to 465 if 587 fails
+                with smtplib.SMTP_SSL(settings.SMTP_HOST, 465, context=context, timeout=settings.SMTP_TIMEOUT) as server:
+                    server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+                    server.sendmail(settings.SMTP_FROM_EMAIL, email, message.as_string())
+                print(f"Email sent successfully to {email} using fallback port 465")
+                return True
 
         print(f"Email sent successfully to {email}")
         return True

@@ -30,7 +30,7 @@ import app.models.interview
 import app.models.user_usage
 import app.models.letter
 
-app = FastAPI(title="Genius API", version="1.0.0")
+app = FastAPI(title="Genius API", version="1.0.0", redirect_slashes=False)
 
 # CORS Configuration
 origins = [

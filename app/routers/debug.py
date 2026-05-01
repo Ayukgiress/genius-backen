@@ -133,6 +133,57 @@ async def list_all_users(
 class UpdatePlanRequest(BaseModel):
     plan: str  # "free" or "pro"
 
+class TestEmailRequest(BaseModel):
+    email: str
+
+@router.post("/test-email")
+async def test_email(
+    request: TestEmailRequest
+):
+    """Debug endpoint to test email sending."""
+    from app.services.email import _send_email_sync
+    import asyncio
+    
+    subject = "Test Email from Genius API"
+    html_content = "<h1>Test Email</h1><p>This is a test email from the Genius API debug endpoint.</p>"
+    text_content = "This is a test email from the Genius API debug endpoint."
+    
+    result = await asyncio.to_thread(
+        _send_email_sync,
+        request.email,
+        subject,
+        html_content,
+        text_content
+    )
+    
+    if result:
+        return {"status": "success", "message": f"Email sent successfully to {request.email}"}
+    else:
+        return {"status": "error", "message": "Failed to send email. Check logs for details."}
+
+
+@router.get("/check-connectivity")
+async def check_connectivity():
+    """Diagnostic endpoint to check which SMTP ports are reachable."""
+    import socket
+    
+    results = {}
+    targets = [
+        ("smtp.gmail.com", 587),
+        ("smtp.gmail.com", 465),
+        ("google.com", 80)
+    ]
+    
+    for host, port in targets:
+        try:
+            with socket.create_connection((host, port), timeout=5):
+                results[f"{host}:{port}"] = "Connected"
+        except Exception as e:
+            results[f"{host}:{port}"] = f"Failed: {str(e)}"
+            
+    return results
+
+
 @router.get("/user-status")
 async def get_user_status(
     db: AsyncSession = Depends(get_db),
