@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
@@ -143,9 +143,10 @@ async def register(user_in: UserCreate, db: AsyncSession = Depends(get_db)):
         user=user
     )
 
-@router.post("/verify-email", response_model=VerificationResponse)
-async def verify_email(token: str, db: AsyncSession = Depends(get_db)):
+@router.post("/verify-email/", response_model=VerificationResponse)
+async def verify_email(token: str = Query(...), db: AsyncSession = Depends(get_db)):
     """Verify user email with the provided token."""
+    print(f"DEBUG: verify_email called with token: {token}")
     from sqlalchemy import select
     from app.models.user import User
     
@@ -155,23 +156,24 @@ async def verify_email(token: str, db: AsyncSession = Depends(get_db)):
     user = result.scalar_one_or_none()
     
     if not user:
+        print(f"DEBUG: No user found for token: {token}")
         raise HTTPException(
             status_code=400,
             detail="Invalid verification token.",
         )
     
     if user.is_verified:
-        raise HTTPException(
-            status_code=400,
-            detail="Email already verified.",
-        )
+        print(f"DEBUG: User {user.email} is already verified")
+        return VerificationResponse(message="Email already verified.")
     
     # Handle both timezone-aware and timezone-naive datetimes
     if user.verification_token_expires:
         expires_at = user.verification_token_expires
-        if expires_at.tzinfo is not None:
-            expires_at = expires_at.replace(tzinfo=None)
-        if expires_at < datetime.now():
+        if expires_at.tzinfo is None:
+            # If naive, assume it was UTC as per generate_verification_token
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+            
+        if expires_at < datetime.now(timezone.utc):
             raise HTTPException(
                 status_code=400,
                 detail="Verification token has expired.",

@@ -21,13 +21,15 @@ def generate_verification_token() -> tuple[str, datetime]:
 def _send_email_sync(email: str, subject: str, html_content: str, text_content: str) -> bool:
     """Synchronous email sending function to be run in thread pool."""
     try:
-        if settings.EMAIL_PROVIDER == "resend" and settings.RESEND_API_KEY:
+        # Check if provider is valid and has a real API key (not a placeholder)
+        if settings.EMAIL_PROVIDER == "resend" and settings.RESEND_API_KEY and "your_" not in settings.RESEND_API_KEY:
             return _send_via_resend(email, subject, html_content, text_content)
-        elif settings.EMAIL_PROVIDER == "sendgrid" and settings.SENDGRID_API_KEY:
+        elif settings.EMAIL_PROVIDER == "sendgrid" and settings.SENDGRID_API_KEY and "your_" not in settings.SENDGRID_API_KEY:
             return _send_via_sendgrid(email, subject, html_content, text_content)
-        elif settings.EMAIL_PROVIDER == "brevo" and settings.BREVO_API_KEY:
+        elif settings.EMAIL_PROVIDER == "brevo" and settings.BREVO_API_KEY and "your_" not in settings.BREVO_API_KEY:
             return _send_via_brevo(email, subject, html_content, text_content)
         else:
+            # Default to SMTP if provider is "gmail" or if other providers are not properly configured
             return _send_via_smtp(email, subject, html_content, text_content)
     except Exception as e:
         print(f"Error in _send_email_sync: {e}")
@@ -57,17 +59,33 @@ def _send_via_smtp(email: str, subject: str, html_content: str, text_content: st
 
         context = ssl.create_default_context()
 
-        print(f"Attempting to login to {settings.SMTP_HOST}:{settings.SMTP_PORT} as {settings.SMTP_USER}")
+        print(f"Attempting to connect to {settings.SMTP_HOST}:{settings.SMTP_PORT} (TLS: {settings.SMTP_TLS})")
 
-        with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
-            server.starttls(context=context)
-            server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
-            server.sendmail(settings.SMTP_FROM_EMAIL, email, message.as_string())
+        if settings.SMTP_PORT == 465:
+            # Port 465 is for SMTP_SSL
+            with smtplib.SMTP_SSL(settings.SMTP_HOST, settings.SMTP_PORT, context=context, timeout=settings.SMTP_TIMEOUT) as server:
+                server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+                server.sendmail(settings.SMTP_FROM_EMAIL, email, message.as_string())
+        else:
+            # Port 587 is for STARTTLS
+            with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=settings.SMTP_TIMEOUT) as server:
+                if settings.SMTP_TLS:
+                    server.starttls(context=context)
+                server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+                server.sendmail(settings.SMTP_FROM_EMAIL, email, message.as_string())
 
         print(f"Email sent successfully to {email}")
         return True
+    except smtplib.SMTPAuthenticationError:
+        print(f"SMTP Authentication Error: Please check your SMTP_USER and SMTP_PASSWORD.")
+        return False
+    except smtplib.SMTPConnectError:
+        print(f"SMTP Connection Error: Could not connect to {settings.SMTP_HOST}:{settings.SMTP_PORT}.")
+        return False
     except Exception as e:
         print(f"Error in SMTP email send: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 

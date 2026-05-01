@@ -46,8 +46,8 @@ async def create_user(db: AsyncSession, user: UserCreate):
 async def verify_user_email(db: AsyncSession, user: User) -> User:
     """Mark a user's email as verified."""
     user.is_verified = True
-    user.verification_token = None
-    user.verification_token_expires = None
+    # We keep the token for a bit to handle parallel requests/idempotency
+    # It will be cleared when they log in or a new one is generated
     db.add(user)
     await db.commit()
     await db.refresh(user)

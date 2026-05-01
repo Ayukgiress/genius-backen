@@ -21,22 +21,25 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: Optional[str] = None
     SMTP_FROM_EMAIL: str = "noreply@genius.com"
     SMTP_FROM_NAME: str = "Genius API"
+    SMTP_TLS: bool = True
+    SMTP_TIMEOUT: int = 10
 
     # Alternative Email Providers
     RESEND_API_KEY: Optional[str] = None
     SENDGRID_API_KEY: Optional[str] = None
     BREVO_API_KEY: Optional[str] = None
-    EMAIL_PROVIDER: str = Field(default="gmail", validation_alias=AliasChoices("EMAIL_PROVIDER", "email_provider"))  # Options: gmail, resend, sendgrid, brevo
+    # EMAIL_PROVIDER: str = Field(default="gmail", validation_alias=AliasChoices("EMAIL_PROVIDER", "email_provider"))  # Options: gmail, resend, sendgrid, brevo
+    EMAIL_PROVIDER: str = "gmail"
 
-    def __init__(self, **data):
-        super().__init__(**data)
-        # Auto-select email provider based on available API keys
-        if self.RESEND_API_KEY and self.EMAIL_PROVIDER == "gmail":
-            self.EMAIL_PROVIDER = "resend"
-        elif self.SENDGRID_API_KEY and self.EMAIL_PROVIDER == "gmail":
-            self.EMAIL_PROVIDER = "sendgrid"
-        elif self.BREVO_API_KEY and self.EMAIL_PROVIDER == "gmail":
-            self.EMAIL_PROVIDER = "brevo"
+    # def __init__(self, **data):
+    #     super().__init__(**data)
+    #     # Auto-select email provider based on available API keys
+    #     if self.RESEND_API_KEY and self.EMAIL_PROVIDER == "gmail":
+    #         self.EMAIL_PROVIDER = "resend"
+    #     elif self.SENDGRID_API_KEY and self.EMAIL_PROVIDER == "gmail":
+    #         self.EMAIL_PROVIDER = "sendgrid"
+    #     elif self.BREVO_API_KEY and self.EMAIL_PROVIDER == "gmail":
+    #         self.EMAIL_PROVIDER = "brevo"
     
     # Frontend URL for verification links
     FRONTEND_URL: Optional[str] = None

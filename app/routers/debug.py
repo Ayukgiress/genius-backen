@@ -1,13 +1,134 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, or_
 from app.db.session import get_db
 from app.routers.deps import get_current_user
 from app.models.user import User
 from app.crud.user_usage import get_current_month_usage, reset_action_usage_for_month
 from datetime import datetime
 from pydantic import BaseModel
+from typing import Optional
 
 router = APIRouter(prefix="/debug", tags=["debug"])
+
+
+class DebugTokenLookup(BaseModel):
+    token: str
+
+
+@router.get("/lookup-token")
+async def lookup_token(
+    token: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Debug endpoint to look up a user by verification token."""
+    from sqlalchemy import select
+    
+    result = await db.execute(
+        select(User).where(User.verification_token == token)
+    )
+    user = result.scalar_one_or_none()
+    
+    if not user:
+        # Try finding by partial match
+        result = await db.execute(
+            select(User).where(User.verification_token.like(f"{token[:10]}%"))
+        )
+        users = result.scalars().all()
+        
+        if users:
+            return {
+                "status": "partial_match",
+                "matched_users": [
+                    {
+                        "id": u.id,
+                        "email": u.email,
+                        "verification_token": u.verification_token[:20] + "..." if u.verification_token else None,
+                        "is_verified": u.is_verified,
+                        "verification_token_expires": u.verification_token_expires.isoformat() if u.verification_token_expires else None
+                    }
+                    for u in users
+                ]
+            }
+        
+        return {
+            "status": "not_found",
+            "token_searched": token,
+            "message": "No user found with this verification token"
+        }
+    
+    return {
+        "status": "found",
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "verification_token": user.verification_token[:20] + "..." if user.verification_token else None,
+            "is_verified": user.is_verified,
+            "verification_token_expires": user.verification_token_expires.isoformat() if user.verification_token_expires else None
+        }
+    }
+
+
+@router.get("/list-unverified")
+async def list_unverified_users(
+    db: AsyncSession = Depends(get_db),
+    limit: int = 10
+):
+    """Debug endpoint to list unverified users."""
+    from sqlalchemy import select
+    
+    result = await db.execute(
+        select(User)
+        .where(User.is_verified == False)
+        .order_by(User.created_at.desc())
+        .limit(limit)
+    )
+    users = result.scalars().all()
+    
+    return {
+        "unverified_users": [
+            {
+                "id": u.id,
+                "email": u.email,
+                "verification_token": u.verification_token[:20] + "..." if u.verification_token else None,
+                "verification_token_expires": u.verification_token_expires.isoformat() if u.verification_token_expires else None,
+                "created_at": u.created_at.isoformat() if u.created_at else None
+            }
+            for u in users
+        ]
+    }
+
+
+@router.get("/list-users")
+async def list_all_users(
+    db: AsyncSession = Depends(get_db),
+    limit: int = 10
+):
+    """Debug endpoint to list all users."""
+    from sqlalchemy import select
+    
+    result = await db.execute(
+        select(User)
+        .order_by(User.created_at.desc())
+        .limit(limit)
+    )
+    users = result.scalars().all()
+    
+    return {
+        "total_users": len(users),
+        "users": [
+            {
+                "id": u.id,
+                "email": u.email,
+                "is_verified": u.is_verified,
+                "verification_token": u.verification_token[:20] + "..." if u.verification_token else None,
+                "verification_token_expires": u.verification_token_expires.isoformat() if u.verification_token_expires else None,
+                "google_id": u.google_id[:10] + "..." if u.google_id else None,
+                "created_at": u.created_at.isoformat() if u.created_at else None
+            }
+            for u in users
+        ]
+    }
 
 class UpdatePlanRequest(BaseModel):
     plan: str  # "free" or "pro"
