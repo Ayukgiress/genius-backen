@@ -83,27 +83,26 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             stripe.Webhook.construct_event,
             payload, sig_header, settings.STRIPE_WEBHOOK_SECRET
         )
-    except ValueError as e:
+    except ValueError:
         raise HTTPException(status_code=400, detail="Invalid payload")
-    except stripe.error.SignatureVerificationError as e:
+    except stripe.error.SignatureVerificationError:
         raise HTTPException(status_code=400, detail="Invalid signature")
 
     # Handle the event
     if event['type'] == 'checkout.session.completed':
         session = event['data']['object']
-        customer_id = session['customer']
-        subscription_id = session['subscription']
+        customer_id = getattr(session, 'customer', None)
+        subscription_id = getattr(session, 'subscription', None)
+
         result = await db.execute(
             select(User).where(User.stripe_customer_id == customer_id)
         )
         user = result.scalar_one_or_none()
         if user:
-            # Set Pro subscription
             user.subscription_plan = "pro"
             user.subscription_status = "active"
             user.subscription_id = subscription_id
             
-            # Reset job_matching usage for this month (automated fix for upgrade)
             from app.crud.user_usage import reset_action_usage_for_month
             from datetime import datetime
             now = datetime.now()
@@ -115,9 +114,12 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
 
     elif event['type'] == 'invoice.paid':
         invoice = event['data']['object']
-        if invoice.get('billing_reason') == 'subscription_create':
-            customer_id = invoice['customer']
-            subscription_id = invoice.get('subscription')
+        billing_reason = getattr(invoice, 'billing_reason', None)
+
+        if billing_reason == 'subscription_create':
+            customer_id = getattr(invoice, 'customer', None)
+            subscription_id = getattr(invoice, 'subscription', None)
+
             result = await db.execute(
                 select(User).where(User.stripe_customer_id == customer_id)
             )
@@ -127,7 +129,6 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                 user.subscription_status = "active"
                 user.subscription_id = subscription_id
 
-                # Reset job_matching usage
                 from app.crud.user_usage import reset_action_usage_for_month
                 from datetime import datetime
                 now = datetime.now()
@@ -141,9 +142,9 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             pass
 
     elif event['type'] == 'invoice.payment_failed':
-        # Payment failed, subscription might be past_due
         invoice = event['data']['object']
-        customer_id = invoice['customer']
+        customer_id = getattr(invoice, 'customer', None)
+
         result = await db.execute(
             select(User).where(User.stripe_customer_id == customer_id)
         )
@@ -154,9 +155,9 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             await db.commit()
 
     elif event['type'] == 'customer.subscription.deleted':
-        # Subscription canceled
         subscription = event['data']['object']
-        customer_id = subscription['customer']
+        customer_id = getattr(subscription, 'customer', None)
+
         result = await db.execute(
             select(User).where(User.stripe_customer_id == customer_id)
         )
