@@ -11,18 +11,23 @@ from app.models.job import Job
 logger = logging.getLogger(__name__)
 
 COMMON_SKILLS = {
-    "python", "javascript", "typescript", "java", "go", "rust", "c++", "c#",
-    "react", "vue", "angular", "next.js", "node.js", "express", "django", "flask",
-    "aws", "gcp", "azure", "docker", "kubernetes", "terraform", "jenkins",
-    "sql", "postgresql", "mysql", "mongodb", "redis", "graphql", "rest",
-    "machine learning", "tensorflow", "pytorch", "nlp", "data science",
-    "git", "linux", "agile", "scrum", "ci/cd", "devops",
-    "swift", "ios", "android", "flutter", "react native",
-    "sass", "css", "html", "tailwind", "figma",
-    "spark", "hadoop", "kafka", "airflow", "etl",
-    "microservices", "api", "system design", "architecture",
-    "postgresql", "mongodb", "redis", "graphql", "rest api",
-    "typescript", "sass", "css", "html", "tailwindcss", "figma",
+    # Tech - Languages & Frameworks
+    "python", "javascript", "typescript", "java", "go", "rust", "c++", "c#", "php", "ruby", "swift", "kotlin",
+    "react", "vue", "angular", "next.js", "node.js", "express", "django", "flask", "laravel", "spring",
+    # Cloud & DevOps
+    "aws", "gcp", "azure", "docker", "kubernetes", "terraform", "jenkins", "github actions", "ci/cd",
+    "sql", "postgresql", "mysql", "mongodb", "redis", "graphql", "rest api", "microservices",
+    # Data & AI
+    "machine learning", "tensorflow", "pytorch", "nlp", "data science", "pandas", "numpy", "scikit-learn",
+    "spark", "hadoop", "kafka", "airflow", "etl", "data engineering",
+    # Soft Skills & Business
+    "project management", "agile", "scrum", "leadership", "communication", "problem solving",
+    "product management", "sales", "marketing", "customer service", "operations", "finance",
+    "strategy", "analysis", "teamwork", "organization", "time management", "creativity",
+    # Design
+    "ui/ux", "figma", "adobe xd", "photoshop", "illustrator", "design system",
+    # General Tech
+    "git", "linux", "unix", "bash", "shell", "networking", "security", "testing", "qa",
 }
 
 
@@ -41,13 +46,10 @@ def extract_skills_from_text(text: str) -> Set[str]:
 def calculate_match_score(resume_skills: Set[str], job_skills: Set[str]) -> tuple[int, List[str], List[str]]:
     """Calculate match score between resume and job requirements."""
     if not job_skills:
-        return 50, [], []
+        return 0, [], []
     
     matched = resume_skills.intersection(job_skills)
     missing = job_skills - resume_skills
-    
-    if not job_skills:
-        return 0, [], []
     
     score = int((len(matched) / len(job_skills)) * 100)
     score = min(100, max(0, score))

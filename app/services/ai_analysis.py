@@ -22,15 +22,19 @@ class ResumeAnalysisService:
             try:
                 from groq import AsyncGroq
                 self.groq_client = AsyncGroq(api_key=settings.GROQ_API_KEY)
-                logger.info("Using Groq for AI analysis (free tier)")
+                self.model_name = "llama-3.3-70b-versatile"
+                self.provider = "groq"
+                logger.info(f"Using Groq for AI analysis (free tier) with model {self.model_name}")
             except ImportError:
                 logger.warning("Groq package not installed")
         
-        if settings.GEMINI_API_KEY:
+        if settings.GEMINI_API_KEY and not self.groq_client:
             try:
                 import google.genai as genai
                 self.gemini_client = genai.Client(api_key=settings.GEMINI_API_KEY)
-                logger.info("Using Gemini for AI analysis")
+                self.model_name = "gemini-2.0-flash"
+                self.provider = "gemini"
+                logger.info(f"Using Gemini for AI analysis with model {self.model_name}")
             except ImportError:
                 logger.warning("Google GenAI package not installed")
     
@@ -52,12 +56,11 @@ class ResumeAnalysisService:
         # Try Groq first (free)
         if self.groq_client:
             try:
-                model = "llama-3.3-70b-versatile"
-                logger.info(f"Starting AI resume analysis with Groq model {model}")
+                logger.info(f"Starting AI resume analysis with Groq model {self.model_name}")
                 response = await self.groq_client.chat.completions.create(
-                    model=model,
+                    model=self.model_name,
                     messages=[
-                        {"role": "system", "content": "You are a professional resume analyst. Provide detailed analysis in JSON format."},
+                        {"role": "system", "content": "You are a professional resume analyst. Provide detailed analysis in JSON format. The overall_score MUST be an integer between 0 and 100."},
                         {"role": "user", "content": prompt}
                     ],
                     temperature=0.3,
@@ -176,9 +179,20 @@ Provide only the JSON, no other text."""
             else:
                 data = json.loads(response_text)
             
+            # Ensure overall_score is an integer
+            score = data.get("overall_score")
+            if isinstance(score, str):
+                try:
+                    # Handle cases like "85%"
+                    score = int(re.search(r'\d+', score).group())
+                except:
+                    score = 50
+            elif score is None:
+                score = 50
+            
             # Ensure all expected fields exist with defaults
             return {
-                "overall_score": data.get("overall_score", 50),
+                "overall_score": score,
                 "strengths": data.get("strengths", []),
                 "weaknesses": data.get("weaknesses", []),
                 "suggestions": data.get("suggestions", []),

@@ -227,7 +227,7 @@ async def get_resume_suggestions(
         )
 
     try:
-        suggestions = await resume_analysis_service.generate_suggestions(
+        suggestions = await resume_analysis_service.get_suggestions(
             resume.content,
             focus_area=focus_area
         )

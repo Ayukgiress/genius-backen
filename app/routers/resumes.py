@@ -82,6 +82,8 @@ async def upload_resume(
             unique_filename,
             folder=f"genius/user_{current_user.id}"
         )
+        if not cloudinary_result or not cloudinary_result.get("url"):
+            raise Exception("Cloudinary upload failed to return a URL")
     except Exception as e:
         raise HTTPException(
             status_code=500,
