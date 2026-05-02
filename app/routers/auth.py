@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
@@ -8,9 +8,11 @@ from app.crud.user import create_user, get_user_by_email, verify_password, verif
 from app.schemas.user import UserCreate, User, Token, UserCreateResponse, VerificationResponse
 from app.core.security import create_access_token
 from app.services.email import send_verification_email
+from app.services.cloudinary import upload_file_to_cloudinary
 from app.routers.deps import get_current_user
 from app.core.config import settings
 import httpx
+import uuid
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -368,6 +370,7 @@ async def read_user_me(current_user: User = Depends(get_current_user)):
 async def update_user_me(
     name: Optional[str] = None,
     bio: Optional[str] = None,
+    profile_picture: Optional[str] = None,
     career_preferences: Optional[dict] = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -377,12 +380,62 @@ async def update_user_me(
         current_user.name = name
     if bio is not None:
         current_user.bio = bio
+    if profile_picture is not None:
+        current_user.profile_picture = profile_picture
     if career_preferences is not None:
         current_user.career_preferences = career_preferences
-    
+
     db.add(current_user)
     await db.commit()
     await db.refresh(current_user)
+    return current_user
+
+@router.post("/me/upload-profile-picture", response_model=User)
+async def upload_profile_picture(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Upload profile picture for current user."""
+    # Validate file type
+    allowed_types = ["image/jpeg", "image/png", "image/gif", "image/webp"]
+    if file.content_type not in allowed_types:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid file type. Only JPEG, PNG, GIF, and WebP images are allowed."
+        )
+
+    # Validate file size (max 5MB)
+    file_content = await file.read()
+    if len(file_content) > 5 * 1024 * 1024:  # 5MB
+        raise HTTPException(
+            status_code=400,
+            detail="File too large. Maximum size is 5MB."
+        )
+
+    # Generate unique filename
+    unique_filename = f"{current_user.id}_{uuid.uuid4().hex}_{file.filename}"
+
+    try:
+        cloudinary_result = await upload_file_to_cloudinary(
+            file_content,
+            unique_filename,
+            folder=f"genius/user_{current_user.id}/profile"
+        )
+        if not cloudinary_result or not cloudinary_result.get("url"):
+            raise Exception("Cloudinary upload failed to return a URL")
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to upload file to cloud storage: {str(e)}"
+        )
+
+    # Update user profile picture
+    current_user.profile_picture = cloudinary_result["url"]
+    db.add(current_user)
+    await db.commit()
+    await db.refresh(current_user)
+
     return current_user
 
 @router.post("/logout")
@@ -393,7 +446,3 @@ async def logout():
 async def refresh_token(current_user: User = Depends(get_current_user)):
     access_token = create_access_token(subject=current_user.email)
     return {"access_token": access_token, "token_type": "bearer"}
-
-@router.get("/google")
-async def google_oauth():
-    return {"message": "Google OAuth login"}

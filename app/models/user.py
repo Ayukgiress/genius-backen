@@ -11,6 +11,7 @@ class User(Base):
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=True)
     name: Mapped[str] = mapped_column(String(255), nullable=True)
     bio: Mapped[str] = mapped_column(String(1000), nullable=True)
+    profile_picture: Mapped[str] = mapped_column(String(500), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     verification_token: Mapped[str] = mapped_column(String(255), nullable=True)

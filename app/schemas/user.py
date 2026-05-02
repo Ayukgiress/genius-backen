@@ -6,6 +6,7 @@ class UserBase(BaseModel):
     email: EmailStr
     name: Optional[str] = None
     bio: Optional[str] = None
+    profile_picture: Optional[str] = None
     subscription_plan: Optional[str] = "free"  # free, pro
     subscription_status: Optional[str] = "inactive"  # inactive, active, canceled, past_due
 
@@ -23,6 +24,7 @@ class UserUpdate(BaseModel):
     email: Optional[EmailStr] = None
     is_active: Optional[bool] = None
     bio: Optional[str] = None
+    profile_picture: Optional[str] = None
     subscription_plan: Optional[str] = None
     subscription_status: Optional[str] = None
 
