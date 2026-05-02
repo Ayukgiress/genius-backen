@@ -75,11 +75,10 @@ async def global_exception_handler(request: Request, exc: Exception):
     # Manually add CORS headers to error responses as they sometimes bypass middleware
     origin = request.headers.get("origin")
     if origin:
-        if "*" in origins or origin in origins:
-            response.headers["Access-Control-Allow-Origin"] = origin
-            response.headers["Access-Control-Allow-Credentials"] = "true"
-            response.headers["Access-Control-Allow-Methods"] = "*"
-            response.headers["Access-Control-Allow-Headers"] = "*"
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = "*"
+        response.headers["Access-Control-Allow-Headers"] = "*"
             
     return response
 
