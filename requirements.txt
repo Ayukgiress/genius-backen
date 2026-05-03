@@ -14,7 +14,9 @@ httpx
 pyyaml
 python-dotenv
 boto3
-pypdf
+pdfplumber
+json-repair
+pypdf  # keep as fallback
 openai
 langchain
 google-genai

@@ -48,8 +48,12 @@ class ResumeAnalysisService:
         if len(resume_content) > MAX_RESUME_LENGTH:
             raise ValueError(f"Resume content exceeds maximum length of {MAX_RESUME_LENGTH} characters")
         
-        if not resume_content or not resume_content.strip():
-            raise ValueError("Resume content cannot be empty")
+        if len(resume_content.strip()) < 50:
+            logger.warning(f"Resume content very short ({len(resume_content.strip())} chars), using fallback scoring")
+            return self._rule_based_scoring(resume_content)
+        
+        if len(resume_content) > MAX_RESUME_LENGTH:
+            raise ValueError(f"Resume content exceeds maximum length of {MAX_RESUME_LENGTH} characters")
         
         prompt = self._build_analysis_prompt(resume_content)
         
@@ -169,49 +173,82 @@ Provide your suggestions in JSON format:
 
 Provide only the JSON, no other text."""
 
+    def _rule_based_scoring(self, content: str) -> Dict[str, Any]:
+        "Simple rule-based fallback scoring for very short content."
+        content_lower = content.lower().strip()
+        score = 20  # Base score
+        keywords = ['experience', 'skills', 'education', 'project', 'work', 'job', 'engineer', 'manager', 'developer']
+        found_keywords = sum(1 for kw in keywords if kw in content_lower)
+        score += found_keywords * 5
+        score = min(100, max(0, score))
+        logger.info(f"Rule-based score: {score} for content len {len(content)} with {found_keywords} keywords")
+        return {
+            "overall_score": score,
+            "strengths": ["Basic structure detected"],
+            "weaknesses": ["Content too short for detailed analysis"],
+            "suggestions": ["Add more details to experience, skills, education sections"],
+            "ats_compatibility": "low",
+            "keywords_missing": ["experience", "skills", "education"],
+            "summary": "Basic rule-based analysis due to short content."
+        }
+    
     def _parse_ai_response(self, response_text: str) -> Dict[str, Any]:
-        """Parse the AI response into a structured dictionary."""
-        try:
-            # Try to find JSON in the response
-            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-            if json_match:
-                data = json.loads(json_match.group())
-            else:
-                data = json.loads(response_text)
-            
-            # Ensure overall_score is an integer
-            score = data.get("overall_score")
-            if isinstance(score, str):
+        logger.info(f"Raw AI response length: {len(response_text)} chars")
+        logger.debug(f"Raw response preview: {response_text[:500]}...")
+        
+        # Strip common wrappers like ```json
+        cleaned = re.sub(r'```json|```|``` ?json', '', response_text, flags=re.IGNORECASE).strip()
+        
+        # Try multiple ways to extract JSON
+        candidates = []
+        for match in re.finditer(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', cleaned, re.DOTALL):
+            candidates.append(match.group())
+        
+        if candidates:
+            for json_str in candidates:
                 try:
-                    # Handle cases like "85%"
-                    score = int(re.search(r'\d+', score).group())
-                except:
-                    score = 50
-            elif score is None:
-                score = 50
-            
-            # Ensure all expected fields exist with defaults
-            return {
-                "overall_score": score,
-                "strengths": data.get("strengths", []),
-                "weaknesses": data.get("weaknesses", []),
-                "suggestions": data.get("suggestions", []),
-                "ats_compatibility": data.get("ats_compatibility", "medium"),
-                "keywords_missing": data.get("keywords_missing", []),
-                "summary": data.get("summary", "Resume analysis completed.")
-            }
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse AI response: {e}")
-            # Return a default response
-            return {
-                "overall_score": 50,
-                "strengths": ["Unable to analyze"],
-                "weaknesses": ["Unable to analyze"],
-                "suggestions": ["Please try again"],
-                "ats_compatibility": "medium",
-                "keywords_missing": [],
-                "summary": "Analysis could not be completed. Please try again."
-            }
+                    data = json.loads(json_str)
+                    logger.info("JSON parsed successfully")
+                    break
+                except json.JSONDecodeError:
+                    continue
+            else:
+                logger.warning("No valid JSON in candidates, trying repair")
+                try:
+                    from json_repair import repair_json
+                    repaired = repair_json(cleaned)
+                    data = json.loads(repaired)
+                    logger.info("JSON repaired successfully")
+                except ImportError:
+                    logger.warning("json-repair not available")
+                    data = {}
+                except json.JSONDecodeError:
+                    data = {}
+        else:
+            try:
+                data = json.loads(cleaned)
+            except json.JSONDecodeError:
+                data = {}
+        
+        # Robust score extraction
+        score_str = str(data.get("overall_score", 50))
+        score = 50
+        score_match = re.search(r'(\d+)', score_str)
+        if score_match:
+            score = int(score_match.group(1))
+        score = min(100, max(0, score))
+        
+        result = {
+            "overall_score": score,
+            "strengths": data.get("strengths", []),
+            "weaknesses": data.get("weaknesses", []),
+            "suggestions": data.get("suggestions", []),
+            "ats_compatibility": data.get("ats_compatibility", "medium"),
+            "keywords_missing": data.get("keywords_missing", []),
+            "summary": data.get("summary", "Resume analysis completed.")
+        }
+        logger.info(f"Parsed score: {result['overall_score']}")
+        return result
 
 
 # Singleton instance

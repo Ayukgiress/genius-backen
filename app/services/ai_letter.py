@@ -115,7 +115,7 @@ Return only the letter content, no additional explanations."""
         """Generate letter using Groq."""
         try:
             response = await self.groq_client.chat.completions.create(
-                model="llama3-8b-8192",
+                model="llama-3.1-8b-instant",
                 messages=[
                     {"role": "system", "content": "You are a professional career counselor and letter writer."},
                     {"role": "user", "content": prompt}
