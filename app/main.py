@@ -40,6 +40,7 @@ origins = [
     "https://genius-pi.vercel.app",
     "https://genuis-pi.vercel.app/",
     "https://genius-pi.vercel.app/",
+    "https://genius-backen.onrender.com",
 ]
 
 if settings.FRONTEND_URL:
