@@ -43,19 +43,26 @@ async def google_login():
             status_code=500,
             detail="Google OAuth is not configured. Please contact the administrator."
         )
+    # Always use the configured redirect URI to avoid mismatch errors
     auth_url = get_google_oauth_url()
     return {"authorization_url": auth_url}
 
 
 @router.get("/google/callback")
-async def google_callback(code: str, db: AsyncSession = Depends(get_db)):
+async def google_callback(
+    code: str, 
+    db: AsyncSession = Depends(get_db)
+):
     """Handle Google OAuth callback and exchange code for tokens."""
     if not settings.GOOGLE_CLIENT_ID or not settings.GOOGLE_CLIENT_SECRET:
         raise HTTPException(
             status_code=500,
             detail="Google OAuth is not configured."
         )
-    
+     
+    # Always use the configured redirect URI to avoid mismatch errors
+    effective_redirect_uri = settings.GOOGLE_REDIRECT_URI
+     
     # Exchange code for tokens
     async with httpx.AsyncClient() as client:
         # Get access token
@@ -66,7 +73,7 @@ async def google_callback(code: str, db: AsyncSession = Depends(get_db)):
                 "client_secret": settings.GOOGLE_CLIENT_SECRET,
                 "code": code,
                 "grant_type": "authorization_code",
-                "redirect_uri": settings.GOOGLE_REDIRECT_URI
+                "redirect_uri": effective_redirect_uri
             }
         )
         
@@ -102,7 +109,7 @@ async def google_callback(code: str, db: AsyncSession = Depends(get_db)):
                 status_code=400,
                 detail="Failed to get email from Google"
             )
-    
+     
     # Get or create user
     user = await get_or_create_google_user(db, email, name, google_id)
     

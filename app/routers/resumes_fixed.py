@@ -139,7 +139,7 @@ async def upload_resume(
     
     resume_data = {
         "file_name": file.filename,
-        "file_path": cloudinary_result["url"],  # Store Cloudinary URL
+        "file_path": cloudinary_result["url"], 
         "content": content,
         "user_id": current_user.id
     }
