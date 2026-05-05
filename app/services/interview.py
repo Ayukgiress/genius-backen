@@ -5,6 +5,7 @@ import cv2
 import numpy as np
 import mediapipe as mp
 import asyncio
+import functools
 from typing import Dict, Any, List, Optional
 from app.core.config import settings
 from app.services.job_scraper import job_service
@@ -17,10 +18,6 @@ class InterviewService:
     def __init__(self):
         self.groq_client = None
         self.openai_client = None
-        self.mp_face_detection = mp.solutions.face_detection
-        self.mp_pose = mp.solutions.pose
-        self.face_detection = self.mp_face_detection.FaceDetection(model_selection=0, min_detection_confidence=0.5)
-        self.pose = self.mp_pose.Pose(min_detection_confidence=0.5, min_pose_confidence=0.5)
         if settings.GROQ_API_KEY:
             try:
                 from groq import AsyncGroq
@@ -69,6 +66,26 @@ class InterviewService:
             logger.error(f'TTS error: {e}')
             raise e
 
+    @functools.lru_cache(maxsize=1)
+    def _get_face_detection(self):
+        try:
+            return mp.solutions.face_detection.FaceDetection(
+                model_selection=0, min_detection_confidence=0.5
+            )
+        except Exception as e:
+            logger.warning(f'MediaPipe face detection init failed: {e}. Disabling video analysis.')
+            return None
+
+    @functools.lru_cache(maxsize=1)
+    def _get_pose(self):
+        try:
+            return mp.solutions.pose.Pose(
+                min_detection_confidence=0.5, min_pose_confidence=0.5
+            )
+        except Exception as e:
+            logger.warning(f'MediaPipe pose init failed: {e}. Disabling video analysis.')
+            return None
+
     async def process_video_frame(self, base64_data: str, timestamp: int, job_id: str, conversation_history: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
         "Process video chunk: MediaPipe face/posture -> visual analysis -> LLM next question."
         if not self.groq_client:
@@ -91,12 +108,18 @@ class InterviewService:
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
             # Face detection
-            face_results = self.face_detection.process(rgb_frame)
-            face_desc = 'Face detected' if face_results.detections else 'No face detected'
+            face_detection = self._get_face_detection()
+            face_desc = 'Face analysis unavailable'
+            if face_detection:
+                face_results = face_detection.process(rgb_frame)
+                face_desc = 'Face detected' if face_results.detections else 'No face detected'
 
             # Pose estimation for posture
-            pose_results = self.pose.process(rgb_frame)
-            posture_desc = 'Upright/confident posture' if pose_results.pose_landmarks else 'Posture not clear'
+            pose = self._get_pose()
+            posture_desc = 'Posture analysis unavailable'
+            if pose:
+                pose_results = pose.process(rgb_frame)
+                posture_desc = 'Upright/confident posture' if pose_results.pose_landmarks else 'Posture not clear'
 
             # Visual 'STT' (no audio)
             visual_stt = f'No audio detected. Visual analysis: {face_desc}. {posture_desc}. Candidate appears engaged.'

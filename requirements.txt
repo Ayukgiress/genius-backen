@@ -29,5 +29,5 @@ uvicorn
 stripe
 mangum
 opencv-python>=4.8.1.0
-mediapipe>=0.10.14
+mediapipe==0.10.14
 faster-whisper
