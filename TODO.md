@@ -1,9 +1,11 @@
-# TODO: Fix Render Deployment - Mediapipe Error
+# Mediapipe Update TODO
 
-## Plan Steps:
-- [x] Step 1: Update requirements.txt - Pin mediapipe==0.10.14
-- [x] Step 2: Refactor app/services/interview.py - Lazy MediaPipe initialization  
-- [ ] Step 3: Install deps & test local startup with uvicorn
-- [ ] Step 4: Deploy to Render and verify port binding
-- [ ] Step 5: Complete task
+**Completed:**
+- [x] Update requirements.txt: mediapipe==0.10.14 -> mediapipe==0.10.30
+- [x] Created TODO.md tracking
 
+**Pending:**
+- [ ] Activate Python virtual environment and run `pip install -r requirements.txt` to verify install
+- [ ] Commit/push changes  
+- [ ] Retry Render deployment
+- [ ] Test interview video analysis endpoint (app/services/interview.py MediaPipe face/pose detection)
