@@ -88,7 +88,6 @@ async def startup():
     try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all, checkfirst=True)
-            # Add missing columns for existing tables
             await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_customer_id VARCHAR(255);"))
             await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_plan VARCHAR(50) DEFAULT 'free';"))
             await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_status VARCHAR(50) DEFAULT 'inactive';"))
@@ -114,6 +113,5 @@ app.include_router(debug_router, prefix="/api")
 async def root():
     return {"message": "Welcome to Genius API"}
 
-# Handler for Vercel deployment
 from mangum import Mangum
 handler = Mangum(app, lifespan="off")

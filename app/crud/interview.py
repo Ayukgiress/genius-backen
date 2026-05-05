@@ -2,7 +2,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.models.interview import Interview, InterviewMessage
 from app.schemas.interview import InterviewCreate, InterviewMessageCreate
-from typing import List
+from typing import List, Optional, Dict, Any
 
 async def get_interview(db: AsyncSession, interview_id: int):
     result = await db.execute(
@@ -59,11 +59,19 @@ async def delete_interview(db: AsyncSession, interview_id: int):
     return True
 
 # Interview Message CRUD
-async def create_interview_message(db: AsyncSession, interview_id: int, message: InterviewMessageCreate):
+async def create_interview_message(
+    db: AsyncSession, 
+    interview_id: int, 
+    message: InterviewMessageCreate,
+    transcript: Optional[str] = None,
+    visual_data: Optional[Dict[str, Any]] = None
+):
     db_message = InterviewMessage(
         interview_id=interview_id,
         role=message.role,
-        content=message.content
+        content=message.content,
+        transcript=transcript,
+        visual_data=visual_data
     )
     db.add(db_message)
     await db.commit()

@@ -1,8 +1,9 @@
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy import String, Integer, DateTime, ForeignKey, Text
+from sqlalchemy import String, Integer, DateTime, Text, ForeignKey
+from sqlalchemy.dialects.postgresql import JSONB
 from datetime import datetime, timezone
+from typing import List, Optional
 from app.db.session import Base
-from typing import List
 
 class Interview(Base):
     __tablename__ = "interviews"
@@ -23,6 +24,8 @@ class InterviewMessage(Base):
     interview_id: Mapped[int] = mapped_column(ForeignKey("interviews.id"), nullable=False)
     role: Mapped[str] = mapped_column(String(20), nullable=False)  # system, assistant, user
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    transcript: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # STT/visual transcript
+    visual_data: Mapped[Optional[JSONB]] = mapped_column(JSONB, nullable=True)  # Face/posture JSON
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     interview: Mapped["Interview"] = relationship("Interview", back_populates="messages")

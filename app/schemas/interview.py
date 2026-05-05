@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 
 class InterviewMessageBase(BaseModel):
     role: str  # system, assistant, user
@@ -13,10 +13,13 @@ class InterviewMessageResponse(InterviewMessageBase):
     id: int
     interview_id: int
     created_at: datetime
-    audio_content: Optional[str] = None  # Base64 encoded audio
+    audio_content: Optional[str] = None  # Base64 encoded audio (legacy)
+    transcript: Optional[str] = None  # Visual/STT transcript
+    visual_analysis: Optional[Dict[str, Any]] = None  # Face/posture data
 
     class Config:
         from_attributes = True
+        arbitrary_types_allowed = True  # For dict
 
 class InterviewBase(BaseModel):
     job_id: str

@@ -21,12 +21,13 @@ GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
 
-def get_google_oauth_url() -> str:
+def get_google_oauth_url(redirect_uri: Optional[str] = None) -> str:
     """Generate Google OAuth authorization URL."""
     import urllib.parse
+    effective_redirect_uri = redirect_uri or settings.GOOGLE_REDIRECT_URI
     params = {
         "client_id": settings.GOOGLE_CLIENT_ID,
-        "redirect_uri": settings.GOOGLE_REDIRECT_URI,
+        "redirect_uri": effective_redirect_uri,
         "response_type": "code",
         "scope": "openid email profile",
         "access_type": "offline",
@@ -36,21 +37,22 @@ def get_google_oauth_url() -> str:
 
 
 @router.get("/google")
-async def google_login():
+async def google_login(redirect_uri: Optional[str] = None):
     """Redirect to Google OAuth authorization page."""
     if not settings.GOOGLE_CLIENT_ID or not settings.GOOGLE_CLIENT_SECRET:
         raise HTTPException(
             status_code=500,
             detail="Google OAuth is not configured. Please contact the administrator."
         )
-    # Always use the configured redirect URI to avoid mismatch errors
-    auth_url = get_google_oauth_url()
+    # Use provided redirect URI if available, otherwise fallback to configured one
+    auth_url = get_google_oauth_url(redirect_uri)
     return {"authorization_url": auth_url}
 
 
 @router.get("/google/callback")
 async def google_callback(
     code: str, 
+    redirect_uri: Optional[str] = None,
     db: AsyncSession = Depends(get_db)
 ):
     """Handle Google OAuth callback and exchange code for tokens."""
@@ -60,8 +62,8 @@ async def google_callback(
             detail="Google OAuth is not configured."
         )
      
-    # Always use the configured redirect URI to avoid mismatch errors
-    effective_redirect_uri = settings.GOOGLE_REDIRECT_URI
+    # Use the same redirect URI used for authorization
+    effective_redirect_uri = redirect_uri or settings.GOOGLE_REDIRECT_URI
      
     # Exchange code for tokens
     async with httpx.AsyncClient() as client:
