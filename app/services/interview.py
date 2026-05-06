@@ -1,9 +1,14 @@
 import json
 import logging
 import base64
-import cv2
-import numpy as np
-import mediapipe as mp
+try:
+    import cv2
+    import numpy as np
+    import mediapipe as mp
+except ImportError:
+    cv2 = None
+    np = None
+    mp = None
 import asyncio
 import functools
 from typing import Dict, Any, List, Optional
@@ -86,13 +91,18 @@ class InterviewService:
             logger.warning(f'MediaPipe pose init failed: {e}. Disabling video analysis.')
             return None
 
-    async def process_video_frame(self, base64_data: str, timestamp: int, job_id: str, conversation_history: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
+    async def process_video_frame(self, base64_data: str, timestamp: int, job_id: str, conversation_history: Optional[List[Dict[str, str]]] = None, generate_ai: bool = True) -> Dict[str, Any]:
         "Process video chunk: MediaPipe face/posture -> visual analysis -> LLM next question."
         if not self.groq_client:
             return {'error': 'Groq client not configured', 'status': 'error'}
+        
+        if cv2 is None or np is None:
+            return {'error': 'OpenCV or NumPy not installed', 'status': 'error'}
 
         # Decode base64 webp
         try:
+            if ',' in base64_data:
+                base64_data = base64_data.split(',')[1]
             image_data = base64.b64decode(base64_data)
             nparr = np.frombuffer(image_data, np.uint8)
             frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -124,40 +134,42 @@ class InterviewService:
             # Visual 'STT' (no audio)
             visual_stt = f'No audio detected. Visual analysis: {face_desc}. {posture_desc}. Candidate appears engaged.'
 
-            # Job context
-            try:
-                job = await job_service.match_with_resume(job_id, '')
-                job_dict = {
-                    'title': getattr(job, 'title', 'Unknown'),
-                    'company': getattr(job, 'company', 'Unknown'),
-                }
-            except:
-                job_dict = {'title': 'Unknown', 'company': 'Unknown'}
+            ai_text = None
+            if generate_ai:
+                # Job context
+                try:
+                    job = await job_service.match_with_resume(job_id, '')
+                    job_dict = {
+                        'title': getattr(job, 'title', 'Unknown'),
+                        'company': getattr(job, 'company', 'Unknown'),
+                    }
+                except:
+                    job_dict = {'title': 'Unknown', 'company': 'Unknown'}
 
-            # LLM video analysis prompt
-            system_prompt = self._build_video_analysis_prompt(job_dict)
-            user_prompt = f"Analyze video frame + speech: '{visual_stt}'. "
-            if conversation_history:
-                user_prompt += f"Recent history: {json.dumps(conversation_history[-3:])} . "
-            user_prompt += 'From job interview. Ask the next relevant question.'
+                # LLM video analysis prompt
+                system_prompt = self._build_video_analysis_prompt(job_dict)
+                user_prompt = f"Analyze video frame + speech: '{visual_stt}'. "
+                if conversation_history:
+                    user_prompt += f"Recent history: {json.dumps(conversation_history[-3:])} . "
+                user_prompt += 'From job interview. Ask the next relevant question.'
 
-            messages = [
-                {'role': 'system', 'content': system_prompt},
-                {'role': 'user', 'content': user_prompt}
-            ]
+                messages = [
+                    {'role': 'system', 'content': system_prompt},
+                    {'role': 'user', 'content': user_prompt}
+                ]
 
-            response = await self.groq_client.chat.completions.create(
-                model='llama-3.3-70b-versatile',
-                messages=messages,
-                temperature=0.7,
-                max_tokens=400
-            )
-            ai_text = response.choices[0].message.content.strip()
+                response = await self.groq_client.chat.completions.create(
+                    model='llama-3.3-70b-versatile',
+                    messages=messages,
+                    temperature=0.7,
+                    max_tokens=400
+                )
+                ai_text = response.choices[0].message.content.strip()
 
             result = {
                 'transcript': visual_stt,
                 'ai_text': ai_text,
-                'status': 'responding',
+                'status': 'responding' if ai_text else 'analyzing',
                 'timestamp': timestamp,
                 'visual': {
                     'face': face_desc,

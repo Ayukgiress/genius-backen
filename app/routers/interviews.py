@@ -184,12 +184,17 @@ async def interview_talk_websocket(
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
             return
 
+        frame_count = 0
         while True:
             data = await websocket.receive_json()
             
             if data.get("type") == "video_chunk":
+                frame_count += 1
                 base64_data = data["data"]
                 timestamp = data["timestamp"]
+                
+                # Only generate AI response every 10 frames to avoid spamming LLM
+                should_generate_ai = (frame_count % 10 == 0)
                 
                 # Get history
                 messages = await get_interview_messages(db, interview_id)
@@ -202,7 +207,8 @@ async def interview_talk_websocket(
                     base64_data, 
                     timestamp, 
                     interview.job_id, 
-                    conversation_history
+                    conversation_history,
+                    generate_ai=should_generate_ai
                 )
                 
                 if "error" in result:
@@ -222,12 +228,13 @@ async def interview_talk_websocket(
                     visual_data=result["visual"]
                 )
                 
-                # Save AI response
-                ai_msg = InterviewMessageCreate(
-                    role="assistant",
-                    content=result["ai_text"]
-                )
-                await create_interview_message(db, interview_id, ai_msg)
+                # Save AI response if generated
+                if result.get("ai_text"):
+                    ai_msg = InterviewMessageCreate(
+                        role="assistant",
+                        content=result["ai_text"]
+                    )
+                    await create_interview_message(db, interview_id, ai_msg)
                 
                 # Send result to frontend
                 await websocket.send_json(result)
