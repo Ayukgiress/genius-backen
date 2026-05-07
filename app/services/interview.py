@@ -87,9 +87,6 @@ class InterviewService:
         if not self.groq_client or not self.openai_client:
             return {'error': 'Groq or OpenAI client not configured', 'status': 'error'}
 
-        if AudioSegment is None:
-            return {'error': 'Audio processing libraries not installed', 'status': 'error'}
-
         try:
             # Decode base64 WebM/Opus audio
             audio_data = base64.b64decode(base64_audio)
@@ -113,11 +110,20 @@ class InterviewService:
             # Generate speech from AI response
             speech_bytes = await self.generate_speech(ai_response)
 
-            # Convert speech to WebM/Opus
-            speech_segment = AudioSegment.from_file(io.BytesIO(speech_bytes), format="mp3")  # OpenAI returns MP3
-            webm_buffer = io.BytesIO()
-            speech_segment.export(webm_buffer, format="webm", codec="opus")
-            webm_data = webm_buffer.getvalue()
+            # Try to convert speech to WebM/Opus if libraries are available
+            if AudioSegment is not None:
+                try:
+                    # Convert speech to WebM/Opus
+                    speech_segment = AudioSegment.from_file(io.BytesIO(speech_bytes), format="mp3")  # OpenAI returns MP3
+                    webm_buffer = io.BytesIO()
+                    speech_segment.export(webm_buffer, format="webm", codec="opus")
+                    webm_data = webm_buffer.getvalue()
+                except Exception as conv_error:
+                    logger.warning(f'Audio conversion failed: {conv_error}, using MP3 directly')
+                    webm_data = speech_bytes
+            else:
+                logger.warning('Audio processing libraries not available, using MP3 directly')
+                webm_data = speech_bytes
 
             # Encode back to base64
             ai_audio_base64 = base64.b64encode(webm_data).decode('utf-8')

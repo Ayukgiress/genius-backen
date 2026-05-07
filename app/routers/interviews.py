@@ -162,6 +162,38 @@ async def complete_interview(
     updated_interview = await update_interview_status(db, interview_id, "completed")
     return {"message": "Interview completed", "interview": updated_interview}
 
+@router.get("/test-websocket-auth")
+async def test_websocket_auth(token: str):
+    """Test endpoint to validate WebSocket authentication token"""
+    try:
+        from jose import jwt, JWTError
+        from app.core.config import settings
+
+        if not hasattr(settings, 'SECRET_KEY') or not settings.SECRET_KEY:
+            return {"error": "Server configuration error"}
+
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        email: str = payload.get("sub")
+
+        if email is None:
+            return {"error": "Invalid token - missing email"}
+
+        db_gen = get_db()
+        db = await anext(db_gen)
+
+        from app.crud.user import get_user_by_email
+        user = await get_user_by_email(db, email=email)
+
+        if not user:
+            return {"error": "User not found"}
+
+        return {"success": True, "user_id": user.id, "email": email}
+
+    except JWTError as e:
+        return {"error": f"JWT decode error: {str(e)}"}
+    except Exception as e:
+        return {"error": f"Unexpected error: {str(e)}"}
+
 @router.websocket("/{interview_id}/talk")
 async def interview_talk_websocket(
     websocket: WebSocket,
@@ -173,20 +205,47 @@ async def interview_talk_websocket(
     Expects: { "type": "audio_chunk", "data": "base64_webm_opus" }
     Responds: { "transcript": "stt_result", "ai_text": "Next question...", "ai_audio": "base64_webm_opus", "status": "success" }
     """
+    # Accept WebSocket connection first
+    await websocket.accept()
+    logger.info(f"WebSocket connection accepted for interview {interview_id}")
+
     # Authenticate user from token
     if not token:
+        logger.warning("WebSocket connection attempted without token")
+        await websocket.send_json({"error": "Authentication token required", "status": "error"})
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
+    db = None
     try:
         # Decode and validate JWT token
         from jose import jwt, JWTError
         from app.core.config import settings
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-        email: str = payload.get("sub")
-        if email is None:
+
+        logger.info(f"Attempting to decode JWT token for WebSocket connection to interview {interview_id}")
+
+        try:
+            if not hasattr(settings, 'SECRET_KEY') or not settings.SECRET_KEY:
+                logger.error("SECRET_KEY not configured")
+                await websocket.send_json({"error": "Server configuration error", "status": "error"})
+                await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+                return
+
+            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        except JWTError as e:
+            logger.error(f"JWT decode error: {e}")
+            await websocket.send_json({"error": "Invalid authentication token", "status": "error"})
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
             return
+
+        email: str = payload.get("sub")
+        if email is None:
+            logger.error("JWT payload missing 'sub' field")
+            await websocket.send_json({"error": "Invalid authentication token", "status": "error"})
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+
+        logger.info(f"JWT decoded successfully for user: {email}")
 
         db_gen = get_db()
         db = await anext(db_gen)
@@ -195,16 +254,22 @@ async def interview_talk_websocket(
         from app.crud.user import get_user_by_email
         user = await get_user_by_email(db, email=email)
         if not user:
+            logger.error(f"User not found for email: {email}")
+            await websocket.send_json({"error": "User not found", "status": "error"})
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
             return
 
-        await websocket.accept()
+        logger.info(f"User authenticated: {user.id}")
 
         # Verify interview ownership
         interview = await get_interview(db, interview_id)
         if not interview or interview.user_id != user.id:
+            logger.error(f"Interview {interview_id} not found or not owned by user {user.id}")
+            await websocket.send_json({"error": "Interview not found or access denied", "status": "error"})
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
             return
+
+        logger.info(f"Interview access verified for user {user.id}, interview {interview_id}")
 
         while True:
             data = await websocket.receive_json()
