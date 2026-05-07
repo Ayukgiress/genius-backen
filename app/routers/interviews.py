@@ -194,42 +194,50 @@ async def test_websocket_auth(token: str):
     except Exception as e:
         return {"error": f"Unexpected error: {str(e)}"}
 
+@router.websocket("/test-ws")
+async def test_websocket(websocket: WebSocket):
+    """Simple test WebSocket endpoint that accepts and echoes messages"""
+    logger.info("Test WebSocket connection attempt")
+    await websocket.accept()
+    logger.info("Test WebSocket accepted")
+    try:
+        while True:
+            data = await websocket.receive_text()
+            logger.info(f"Test WebSocket received: {data}")
+            await websocket.send_text(f"Echo: {data}")
+    except Exception as e:
+        logger.error(f"Test WebSocket error: {e}")
+
 @router.websocket("/{interview_id}/talk")
 async def interview_talk_websocket(
     websocket: WebSocket,
-    interview_id: int,
-    token: Optional[str] = Query(None)
+    interview_id: int
 ):
     """
     WebSocket endpoint for audio-based interview.
-    Can authenticate via 'token' query parameter or first message: { "type": "auth", "token": "jwt_token" }
+    Requires authentication via first message: { "type": "auth", "token": "jwt_token" }
     Then expects: { "type": "audio_chunk", "data": "base64_webm_opus" }
     Responds: { "transcript": "stt_result", "ai_text": "Next question...", "ai_audio": "base64_webm_opus", "status": "success" }
     """
+    logger.info(f"WebSocket connection attempt for interview {interview_id}")
     # Accept WebSocket connection first
     await websocket.accept()
     logger.info(f"WebSocket connection accepted for interview {interview_id}")
 
-    # Authentication logic
-    auth_token = token
-    
-    if not auth_token:
-        # Wait for authentication message if token not in query param
-        try:
-            auth_message = await websocket.receive_json()
-            if auth_message.get("type") != "auth" or not auth_message.get("token"):
-                logger.warning("First message is not authentication and no token in query param")
-                await websocket.send_json({"error": "Authentication required. Provide 'token' query param or send {type: 'auth', token: 'your_jwt_token'}", "status": "error"})
-                await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-                return
-            auth_token = auth_message["token"]
-            logger.info(f"Received authentication token from message for interview {interview_id}")
-        except Exception as e:
-            logger.error(f"Error receiving auth message: {e}")
+    # Wait for authentication message
+    try:
+        auth_message = await websocket.receive_json()
+        if auth_message.get("type") != "auth" or not auth_message.get("token"):
+            logger.warning("First message is not authentication")
+            await websocket.send_json({"error": "Authentication required. Send {type: 'auth', token: 'your_jwt_token'} as first message", "status": "error"})
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
             return
-    else:
-        logger.info(f"Using token from query parameter for interview {interview_id}")
+        auth_token = auth_message["token"]
+        logger.info(f"Received authentication token from message for interview {interview_id}")
+    except Exception as e:
+        logger.error(f"Error receiving auth message: {e}")
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
 
     db = None
     try:
