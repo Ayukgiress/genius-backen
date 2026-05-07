@@ -60,6 +60,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=["*"])
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logging.error(f"Global error: {exc}", exc_info=True)

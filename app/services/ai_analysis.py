@@ -184,6 +184,7 @@ Provide only the JSON, no other text."""
         logger.info(f"Rule-based score: {score} for content len {len(content)} with {found_keywords} keywords")
         return {
             "overall_score": score,
+            "score": score,
             "strengths": ["Basic structure detected"],
             "weaknesses": ["Content too short for detailed analysis"],
             "suggestions": ["Add more details to experience, skills, education sections"],
@@ -240,6 +241,7 @@ Provide only the JSON, no other text."""
         
         result = {
             "overall_score": score,
+            "score": score,
             "strengths": data.get("strengths", []),
             "weaknesses": data.get("weaknesses", []),
             "suggestions": data.get("suggestions", []),
