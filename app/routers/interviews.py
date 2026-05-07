@@ -10,7 +10,7 @@ from app.routers.deps import get_current_user
 from app.schemas.user import User
 from app.schemas.interview import (
     InterviewResponse, InterviewCreate, InterviewMessageResponse,
-    InterviewMessageCreate, InterviewStartRequest
+    InterviewMessageCreate, InterviewStartRequest, InterviewAudioMessageCreate
 )
 from app.crud.interview import (
     get_interview, get_interviews_by_user, get_interviews_by_job,
@@ -136,6 +136,71 @@ async def send_message(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to generate AI response: {str(e)}"
+        )
+
+@router.post("/{interview_id}/audio", response_model=InterviewMessageResponse)
+async def send_audio_message(
+    interview_id: int,
+    audio_in: InterviewAudioMessageCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    # Verify interview ownership
+    interview = await get_interview(db, interview_id)
+    if not interview or interview.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Interview not found")
+
+    # Get conversation history
+    messages = await get_interview_messages(db, interview_id)
+    conversation_history = [
+        {"role": msg.role, "content": msg.content} for msg in messages
+    ]
+
+    try:
+        # Process audio chunk
+        result = await interview_service.process_audio_chunk(
+            audio_in.base64_audio,
+            interview.job_id,
+            conversation_history
+        )
+
+        if "error" in result:
+            raise HTTPException(status_code=500, detail=result["error"])
+
+        # Save user audio transcript as user message
+        if result.get("transcript"):
+            user_msg = InterviewMessageCreate(
+                role="user",
+                content=result["transcript"]
+            )
+            await create_interview_message(
+                db,
+                interview_id,
+                user_msg,
+                transcript=result["transcript"]
+            )
+
+        # Save AI response and audio
+        if result.get("ai_text"):
+            ai_msg = InterviewMessageCreate(
+                role="assistant",
+                content=result["ai_text"]
+            )
+            saved_ai_msg = await create_interview_message(
+                db,
+                interview_id,
+                ai_msg,
+                audio_data=result.get("ai_audio_base64")
+            )
+
+            return saved_ai_msg
+
+        raise HTTPException(status_code=500, detail="No AI response generated")
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to process audio: {str(e)}"
         )
 
 @router.get("/{interview_id}/messages", response_model=List[InterviewMessageResponse])

@@ -41,3 +41,6 @@ class InterviewResponse(InterviewBase):
 
 class InterviewStartRequest(BaseModel):
     resume_id: Optional[int] = None  # Optional resume to provide context
+
+class InterviewAudioMessageCreate(BaseModel):
+    base64_audio: str  # Base64 encoded WebM Opus audio chunk
