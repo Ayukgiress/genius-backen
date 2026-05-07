@@ -3,9 +3,9 @@ import base64
 import io
 import json
 from typing import List, Optional, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, status, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, status, WebSocket, WebSocketDisconnect, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.db.session import get_db
+from app.db.session import get_db, SessionLocal
 from app.routers.deps import get_current_user
 from app.schemas.user import User
 from app.schemas.interview import (
@@ -197,22 +197,32 @@ async def test_websocket_auth(token: str):
 @router.websocket("/{interview_id}/talk")
 async def interview_talk_websocket(
     websocket: WebSocket,
-    interview_id: int,
-    token: Optional[str] = None
+    interview_id: int
 ):
     """
     WebSocket endpoint for audio-based interview.
-    Expects: { "type": "audio_chunk", "data": "base64_webm_opus" }
+    First message should be: { "type": "auth", "token": "jwt_token" }
+    Then expects: { "type": "audio_chunk", "data": "base64_webm_opus" }
     Responds: { "transcript": "stt_result", "ai_text": "Next question...", "ai_audio": "base64_webm_opus", "status": "success" }
     """
     # Accept WebSocket connection first
     await websocket.accept()
     logger.info(f"WebSocket connection accepted for interview {interview_id}")
 
-    # Authenticate user from token
-    if not token:
-        logger.warning("WebSocket connection attempted without token")
-        await websocket.send_json({"error": "Authentication token required", "status": "error"})
+    # Wait for authentication message
+    try:
+        auth_message = await websocket.receive_json()
+        if auth_message.get("type") != "auth" or not auth_message.get("token"):
+            logger.warning("First message is not authentication")
+            await websocket.send_json({"error": "Authentication required. Send {type: 'auth', token: 'your_jwt_token'}", "status": "error"})
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+
+        token = auth_message["token"]
+        logger.info(f"Received authentication token for interview {interview_id}")
+
+    except Exception as e:
+        logger.error(f"Error receiving auth message: {e}")
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
@@ -221,8 +231,6 @@ async def interview_talk_websocket(
         # Decode and validate JWT token
         from jose import jwt, JWTError
         from app.core.config import settings
-
-        logger.info(f"Attempting to decode JWT token for WebSocket connection to interview {interview_id}")
 
         try:
             if not hasattr(settings, 'SECRET_KEY') or not settings.SECRET_KEY:
@@ -271,67 +279,70 @@ async def interview_talk_websocket(
 
         logger.info(f"Interview access verified for user {user.id}, interview {interview_id}")
 
-        while True:
-            data = await websocket.receive_json()
+        # Send authentication success
+        await websocket.send_json({"status": "authenticated", "message": "Ready to receive audio chunks"})
 
-            if data.get("type") == "audio_chunk":
-                base64_audio = data["data"]
+            while True:
+                data = await websocket.receive_json()
 
-                # Get conversation history
-                messages = await get_interview_messages(db, interview_id)
-                conversation_history = [
-                    {"role": msg.role, "content": msg.content} for msg in messages
-                ]
+                if data.get("type") == "audio_chunk":
+                    base64_audio = data["data"]
 
-                # Process audio chunk
-                result = await interview_service.process_audio_chunk(
-                    base64_audio,
-                    interview.job_id,
-                    conversation_history
-                )
+                    # Get conversation history
+                    messages = await get_interview_messages(db, interview_id)
+                    conversation_history = [
+                        {"role": msg.role, "content": msg.content} for msg in messages
+                    ]
 
-                if "error" in result:
+                    # Process audio chunk
+                    result = await interview_service.process_audio_chunk(
+                        base64_audio,
+                        interview.job_id,
+                        conversation_history
+                    )
+
+                    if "error" in result:
+                        await websocket.send_json(result)
+                        continue
+
+                    # Save user audio transcript as user message
+                    if result.get("transcript"):
+                        user_msg = InterviewMessageCreate(
+                            role="user",
+                            content=result["transcript"]
+                        )
+                        await create_interview_message(
+                            db,
+                            interview_id,
+                            user_msg,
+                            transcript=result["transcript"]
+                        )
+
+                    # Save AI response and audio
+                    if result.get("ai_text"):
+                        ai_msg = InterviewMessageCreate(
+                            role="assistant",
+                            content=result["ai_text"]
+                        )
+                        # Store AI audio data in the message
+                        saved_ai_msg = await create_interview_message(
+                            db,
+                            interview_id,
+                            ai_msg,
+                            audio_data=result.get("ai_audio_base64")
+                        )
+
+                        # Add audio data to result for frontend
+                        result["ai_message_id"] = saved_ai_msg.id
+
+                    # Send result to frontend
                     await websocket.send_json(result)
-                    continue
 
-                # Save user audio transcript as user message
-                if result.get("transcript"):
-                    user_msg = InterviewMessageCreate(
-                        role="user",
-                        content=result["transcript"]
-                    )
-                    await create_interview_message(
-                        db,
-                        interview_id,
-                        user_msg,
-                        transcript=result["transcript"]
-                    )
+                elif data.get("type") == "ping":
+                    await websocket.send_json({"type": "pong"})
 
-                # Save AI response and audio
-                if result.get("ai_text"):
-                    ai_msg = InterviewMessageCreate(
-                        role="assistant",
-                        content=result["ai_text"]
-                    )
-                    # Store AI audio data in the message
-                    saved_ai_msg = await create_interview_message(
-                        db,
-                        interview_id,
-                        ai_msg,
-                        audio_data=result.get("ai_audio_base64")
-                    )
-
-                    # Add audio data to result for frontend
-                    result["ai_message_id"] = saved_ai_msg.id
-
-                # Send result to frontend
-                await websocket.send_json(result)
-
-            elif data.get("type") == "ping":
-                await websocket.send_json({"type": "pong"})
-
-            else:
-                await websocket.send_json({"error": "Unknown message type", "status": "error"})
+                else:
+                    await websocket.send_json({"error": "Unknown message type", "status": "error"})
 
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected for interview {interview_id}")

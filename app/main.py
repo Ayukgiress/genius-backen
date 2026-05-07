@@ -1,5 +1,7 @@
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from uvloop import install as install_uvloop
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 import logging
@@ -36,11 +38,14 @@ app = FastAPI(title="Genius API", version="1.0.0", redirect_slashes=False)
 origins = [
     "http://localhost:3000",
     "http://localhost:3001",
+    "http://localhost:5173",
+    "http://localhost:5174",
     "https://genuis-pi.vercel.app",
     "https://genius-pi.vercel.app",
     "https://genuis-pi.vercel.app/",
     "https://genius-pi.vercel.app/",
     "https://genius-backen.onrender.com",
+    "https://genius-backen.onrender.com/",
 ]
 
 if settings.FRONTEND_URL:
