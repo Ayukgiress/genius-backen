@@ -16,6 +16,7 @@ class InterviewMessageResponse(InterviewMessageBase):
     audio_content: Optional[str] = None  # Base64 encoded audio (legacy)
     transcript: Optional[str] = None  # Visual/STT transcript
     visual_analysis: Optional[Dict[str, Any]] = None  # Face/posture data
+    audio_data: Optional[str] = None  # Base64 encoded AI audio response
 
     class Config:
         from_attributes = True

@@ -31,3 +31,5 @@ mangum
 opencv-python>=4.8.1.0
 mediapipe==0.10.30
 faster-whisper
+ffmpeg-python
+pydub

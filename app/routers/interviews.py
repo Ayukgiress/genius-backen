@@ -169,79 +169,102 @@ async def interview_talk_websocket(
     token: Optional[str] = None
 ):
     """
-    WebSocket endpoint for video-based interview.
-    Expects: { "type": "video_chunk", "data": "base64_webp", "timestamp": 1234567890 }
-    Responds: { "transcript": "visual_stt", "ai_text": "Next question...", "status": "responding", "visual": {...} }
+    WebSocket endpoint for audio-based interview.
+    Expects: { "type": "audio_chunk", "data": "base64_webm_opus" }
+    Responds: { "transcript": "stt_result", "ai_text": "Next question...", "ai_audio": "base64_webm_opus", "status": "success" }
     """
-    await websocket.accept()
-    
-    db_gen = get_db()
-    db = await anext(db_gen)
-    
+    # Authenticate user from token
+    if not token:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
     try:
-        interview = await get_interview(db, interview_id)
-        if not interview:
+        # Decode and validate JWT token
+        from jose import jwt, JWTError
+        from app.core.config import settings
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        email: str = payload.get("sub")
+        if email is None:
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
             return
 
-        frame_count = 0
+        db_gen = get_db()
+        db = await anext(db_gen)
+
+        # Verify user exists
+        from app.crud.user import get_user_by_email
+        user = await get_user_by_email(db, email=email)
+        if not user:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+
+        await websocket.accept()
+
+        # Verify interview ownership
+        interview = await get_interview(db, interview_id)
+        if not interview or interview.user_id != user.id:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+
         while True:
             data = await websocket.receive_json()
-            
-            if data.get("type") == "video_chunk":
-                frame_count += 1
-                base64_data = data["data"]
-                timestamp = data["timestamp"]
-                
-                # Only generate AI response every 10 frames to avoid spamming LLM
-                should_generate_ai = (frame_count % 10 == 0)
-                
-                # Get history
+
+            if data.get("type") == "audio_chunk":
+                base64_audio = data["data"]
+
+                # Get conversation history
                 messages = await get_interview_messages(db, interview_id)
                 conversation_history = [
                     {"role": msg.role, "content": msg.content} for msg in messages
                 ]
-                
-                # Process video frame
-                result = await interview_service.process_video_frame(
-                    base64_data, 
-                    timestamp, 
-                    interview.job_id, 
-                    conversation_history,
-                    generate_ai=should_generate_ai
+
+                # Process audio chunk
+                result = await interview_service.process_audio_chunk(
+                    base64_audio,
+                    interview.job_id,
+                    conversation_history
                 )
-                
+
                 if "error" in result:
                     await websocket.send_json(result)
                     continue
-                
-                # Save user video frame analysis as user message
-                user_msg = InterviewMessageCreate(
-                    role="user",
-                    content=result["transcript"]
-                )
-                await create_interview_message(
-                    db, 
-                    interview_id, 
-                    user_msg,
-                    transcript=result["transcript"],
-                    visual_data=result["visual"]
-                )
-                
-                # Save AI response if generated
+
+                # Save user audio transcript as user message
+                if result.get("transcript"):
+                    user_msg = InterviewMessageCreate(
+                        role="user",
+                        content=result["transcript"]
+                    )
+                    await create_interview_message(
+                        db,
+                        interview_id,
+                        user_msg,
+                        transcript=result["transcript"]
+                    )
+
+                # Save AI response and audio
                 if result.get("ai_text"):
                     ai_msg = InterviewMessageCreate(
                         role="assistant",
                         content=result["ai_text"]
                     )
-                    await create_interview_message(db, interview_id, ai_msg)
-                
+                    # Store AI audio data in the message
+                    saved_ai_msg = await create_interview_message(
+                        db,
+                        interview_id,
+                        ai_msg,
+                        audio_data=result.get("ai_audio_base64")
+                    )
+
+                    # Add audio data to result for frontend
+                    result["ai_message_id"] = saved_ai_msg.id
+
                 # Send result to frontend
                 await websocket.send_json(result)
-            
+
             elif data.get("type") == "ping":
                 await websocket.send_json({"type": "pong"})
-            
+
             else:
                 await websocket.send_json({"error": "Unknown message type", "status": "error"})
 

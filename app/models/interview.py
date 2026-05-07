@@ -26,6 +26,7 @@ class InterviewMessage(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     transcript: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # STT/visual transcript
     visual_data: Mapped[Optional[JSONB]] = mapped_column(JSONB, nullable=True)  # Face/posture JSON
+    audio_data: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # Base64 encoded audio response
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     interview: Mapped["Interview"] = relationship("Interview", back_populates="messages")

@@ -1,6 +1,7 @@
 import json
 import logging
 import base64
+import io
 try:
     import cv2
     import numpy as np
@@ -9,6 +10,12 @@ except ImportError:
     cv2 = None
     np = None
     mp = None
+try:
+    import ffmpeg
+    from pydub import AudioSegment
+except ImportError:
+    ffmpeg = None
+    AudioSegment = None
 import asyncio
 import functools
 from typing import Dict, Any, List, Optional
@@ -43,8 +50,12 @@ class InterviewService:
         "Transcribe audio using Groq Whisper"
         if not self.groq_client:
             raise ValueError('Groq client not configured')
-        
+
         try:
+            # Ensure audio_file is a file-like object with proper name
+            if hasattr(audio_file, 'name') and not audio_file.name:
+                audio_file.name = "audio.webm"
+
             translation = await self.groq_client.audio.transcriptions.create(
                 file=audio_file,
                 model='whisper-large-v3',
@@ -59,7 +70,7 @@ class InterviewService:
         "Generate speech using OpenAI TTS"
         if not self.openai_client:
             raise ValueError('OpenAI client not configured')
-        
+
         try:
             response = await self.openai_client.audio.speech.create(
                 model='tts-1',
@@ -70,6 +81,57 @@ class InterviewService:
         except Exception as e:
             logger.error(f'TTS error: {e}')
             raise e
+
+    async def process_audio_chunk(self, base64_audio: str, job_id: str, conversation_history: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
+        "Process audio chunk: decode base64 WebM/Opus -> STT -> AI response -> TTS -> encode back to base64 WebM/Opus"
+        if not self.groq_client or not self.openai_client:
+            return {'error': 'Groq or OpenAI client not configured', 'status': 'error'}
+
+        if AudioSegment is None:
+            return {'error': 'Audio processing libraries not installed', 'status': 'error'}
+
+        try:
+            # Decode base64 WebM/Opus audio
+            audio_data = base64.b64decode(base64_audio)
+            audio_buffer = io.BytesIO(audio_data)
+            audio_buffer.name = "audio.webm"  # Set filename for Groq API
+
+            # Transcribe audio using Groq Whisper
+            transcript = await self.transcribe_audio(audio_buffer)
+
+            if not transcript or transcript.strip() == "":
+                return {
+                    'transcript': '',
+                    'ai_text': None,
+                    'ai_audio_base64': None,
+                    'status': 'no_speech'
+                }
+
+            # Generate AI response
+            ai_response = await self.continue_interview(conversation_history or [], job_id)
+
+            # Generate speech from AI response
+            speech_bytes = await self.generate_speech(ai_response)
+
+            # Convert speech to WebM/Opus
+            speech_segment = AudioSegment.from_file(io.BytesIO(speech_bytes), format="mp3")  # OpenAI returns MP3
+            webm_buffer = io.BytesIO()
+            speech_segment.export(webm_buffer, format="webm", codec="opus")
+            webm_data = webm_buffer.getvalue()
+
+            # Encode back to base64
+            ai_audio_base64 = base64.b64encode(webm_data).decode('utf-8')
+
+            return {
+                'transcript': transcript,
+                'ai_text': ai_response,
+                'ai_audio_base64': ai_audio_base64,
+                'status': 'success'
+            }
+
+        except Exception as e:
+            logger.error(f'Audio processing error: {e}')
+            return {'error': str(e), 'status': 'error'}
 
     @functools.lru_cache(maxsize=1)
     def _get_face_detection(self):

@@ -60,18 +60,20 @@ async def delete_interview(db: AsyncSession, interview_id: int):
 
 # Interview Message CRUD
 async def create_interview_message(
-    db: AsyncSession, 
-    interview_id: int, 
+    db: AsyncSession,
+    interview_id: int,
     message: InterviewMessageCreate,
     transcript: Optional[str] = None,
-    visual_data: Optional[Dict[str, Any]] = None
+    visual_data: Optional[Dict[str, Any]] = None,
+    audio_data: Optional[str] = None
 ):
     db_message = InterviewMessage(
         interview_id=interview_id,
         role=message.role,
         content=message.content,
         transcript=transcript,
-        visual_data=visual_data
+        visual_data=visual_data,
+        audio_data=audio_data
     )
     db.add(db_message)
     await db.commit()
