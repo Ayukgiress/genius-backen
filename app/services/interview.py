@@ -113,7 +113,13 @@ class InterviewService:
 
         try:
             # Decode base64 WebM/Opus audio
+            if not base64_audio or base64_audio.strip() == "":
+                return {'error': 'Empty base64 audio data', 'status': 'error'}
+
             audio_data = base64.b64decode(base64_audio)
+            if not audio_data or len(audio_data) == 0:
+                return {'error': 'Decoded audio data is empty', 'status': 'error'}
+
             audio_buffer = io.BytesIO(audio_data)
             audio_buffer.name = "audio.webm"  # Set filename for Groq API
 
