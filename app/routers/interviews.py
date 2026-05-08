@@ -167,14 +167,13 @@ async def send_audio_message(
         if "error" in result:
             raise HTTPException(status_code=500, detail=result["error"])
 
-        # ← Handle no speech detected — return last AI message instead of crashing
+        # Handle no speech detected — return 200 with a sentinel so frontend knows to stay quiet
         if result.get("status") == "no_speech" or not result.get("transcript"):
-            last_ai_msg = next(
-                (m for m in reversed(messages) if m.role == "assistant"), None
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=200,
+                content={"status": "no_speech", "content": "", "role": "assistant", "id": -1}
             )
-            if last_ai_msg:
-                return last_ai_msg
-            raise HTTPException(status_code=422, detail="No speech detected in audio")
 
         # Save user transcript
         if result.get("transcript"):

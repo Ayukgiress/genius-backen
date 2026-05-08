@@ -93,21 +93,62 @@ class InterviewService:
             raise e
 
     async def generate_speech(self, text: str) -> bytes:
-        "Generate speech using pyttsx3 (free, offline TTS)"
+        "Generate speech using ElevenLabs, OpenAI, or pyttsx3 as fallback"
+        # Try ElevenLabs first
+        if self.elevenlabs_client:
+            try:
+                logger.info("Generating speech with ElevenLabs")
+                from elevenlabs import VoiceSettings
+                audio_stream = await self.elevenlabs_client.generate(
+                    text=text,
+                    voice="Rachel",  # Professional female voice
+                    model_id="eleven_monolingual_v1",
+                    voice_settings=VoiceSettings(
+                        stability=0.5,
+                        similarity_boost=0.8,
+                        style=0.5,
+                        use_speaker_boost=True
+                    )
+                )
+                audio_data = b""
+                async for chunk in audio_stream:
+                    audio_data += chunk
+                return audio_data
+            except Exception as e:
+                logger.warning(f'ElevenLabs TTS failed: {e}')
+
+        # Try OpenAI TTS
+        if self.openai_client:
+            try:
+                logger.info("Generating speech with OpenAI")
+                response = await self.openai_client.audio.speech.create(
+                    model="tts-1",
+                    voice="alloy",
+                    input=text
+                )
+                audio_data = b""
+                async for chunk in response.aiter_bytes():
+                    audio_data += chunk
+                return audio_data
+            except Exception as e:
+                logger.warning(f'OpenAI TTS failed: {e}')
+
+        # Fallback to pyttsx3
+        logger.info("Falling back to pyttsx3 TTS")
         import pyttsx3
         import tempfile
         import os
 
         def _generate_audio():
-            engine = pyttsx3.init()
-            # Set properties if needed
-            engine.setProperty('rate', 180)  # Speed
-            engine.setProperty('volume', 0.9)  # Volume
-
-            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
-                temp_path = temp_file.name
-
             try:
+                engine = pyttsx3.init()
+                # Set properties if needed
+                engine.setProperty('rate', 180)  # Speed
+                engine.setProperty('volume', 0.9)  # Volume
+
+                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
+                    temp_path = temp_file.name
+
                 engine.save_to_file(text, temp_path)
                 engine.runAndWait()
 
@@ -115,7 +156,8 @@ class InterviewService:
                     audio_data = f.read()
                 return audio_data
             finally:
-                os.unlink(temp_path)
+                if 'temp_path' in locals():
+                    os.unlink(temp_path)
 
         try:
             return await asyncio.to_thread(_generate_audio)
@@ -183,23 +225,23 @@ class InterviewService:
             # Generate speech from AI response using pyttsx3
             speech_bytes = await self.generate_speech(ai_response)
 
-            # Try to convert speech to WebM/Opus if libraries are available
+            # Try to convert speech to MP3 if libraries are available
             if AudioSegment is not None:
                 try:
-                    # Convert speech to WebM/Opus
-                    speech_segment = AudioSegment.from_file(io.BytesIO(speech_bytes), format="wav")  # pyttsx3 generates WAV
-                    webm_buffer = io.BytesIO()
-                    speech_segment.export(webm_buffer, format="webm", codec="opus")
-                    webm_data = webm_buffer.getvalue()
+                    # Convert speech to MP3
+                    speech_segment = AudioSegment.from_file(io.BytesIO(speech_bytes), format="wav")  # TTS generates WAV
+                    mp3_buffer = io.BytesIO()
+                    speech_segment.export(mp3_buffer, format="mp3")
+                    audio_data_final = mp3_buffer.getvalue()
                 except Exception as conv_error:
                     logger.warning(f'Audio conversion failed: {conv_error}, using WAV directly')
-                    webm_data = speech_bytes
+                    audio_data_final = speech_bytes
             else:
                 logger.warning('Audio processing libraries not available, using WAV directly')
-                webm_data = speech_bytes
+                audio_data_final = speech_bytes
 
             # Encode back to base64
-            ai_audio_base64 = base64.b64encode(webm_data).decode('utf-8')
+            ai_audio_base64 = base64.b64encode(audio_data_final).decode('utf-8')
 
             return {
                 'transcript': transcript,
