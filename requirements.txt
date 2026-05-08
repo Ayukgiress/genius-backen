@@ -33,3 +33,5 @@ mediapipe==0.10.30
 faster-whisper
 ffmpeg-python
 pydub
+elevenlabs
+pyttsx3

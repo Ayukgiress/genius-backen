@@ -30,6 +30,7 @@ class InterviewService:
     def __init__(self):
         self.groq_client = None
         self.openai_client = None
+        self.elevenlabs_client = None
         if settings.GROQ_API_KEY:
             try:
                 from groq import AsyncGroq
@@ -37,7 +38,7 @@ class InterviewService:
                 logger.info('InterviewService initialized with Groq client')
             except ImportError:
                 logger.warning('Groq package not installed for InterviewService')
-        
+
         if settings.OPENAI_API_KEY:
             try:
                 from openai import AsyncOpenAI
@@ -45,6 +46,14 @@ class InterviewService:
                 logger.info('InterviewService initialized with OpenAI client')
             except ImportError:
                 logger.warning('OpenAI package not installed for InterviewService')
+
+        if settings.ELEVENLABS_API_KEY:
+            try:
+                from elevenlabs import AsyncElevenLabs
+                self.elevenlabs_client = AsyncElevenLabs(api_key=settings.ELEVENLABS_API_KEY)
+                logger.info('InterviewService initialized with ElevenLabs client')
+            except ImportError:
+                logger.warning('ElevenLabs package not installed for InterviewService')
 
     async def transcribe_audio(self, audio_file: Any) -> str:
         "Transcribe audio using Groq Whisper"
@@ -67,25 +76,40 @@ class InterviewService:
             raise e
 
     async def generate_speech(self, text: str) -> bytes:
-        "Generate speech using OpenAI TTS"
-        if not self.openai_client:
-            raise ValueError('OpenAI client not configured')
+        "Generate speech using pyttsx3 (free, offline TTS)"
+        import pyttsx3
+        import tempfile
+        import os
+
+        def _generate_audio():
+            engine = pyttsx3.init()
+            # Set properties if needed
+            engine.setProperty('rate', 180)  # Speed
+            engine.setProperty('volume', 0.9)  # Volume
+
+            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
+                temp_path = temp_file.name
+
+            try:
+                engine.save_to_file(text, temp_path)
+                engine.runAndWait()
+
+                with open(temp_path, 'rb') as f:
+                    audio_data = f.read()
+                return audio_data
+            finally:
+                os.unlink(temp_path)
 
         try:
-            response = await self.openai_client.audio.speech.create(
-                model='tts-1',
-                voice='alloy',
-                input=text
-            )
-            return response.read()
+            return await asyncio.to_thread(_generate_audio)
         except Exception as e:
-            logger.error(f'TTS error: {e}')
+            logger.error(f'pyttsx3 TTS error: {e}')
             raise e
 
     async def process_audio_chunk(self, base64_audio: str, job_id: str, conversation_history: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
-        "Process audio chunk: decode base64 WebM/Opus -> STT -> AI response -> TTS -> encode back to base64 WebM/Opus"
-        if not self.groq_client or not self.openai_client:
-            return {'error': 'Groq or OpenAI client not configured', 'status': 'error'}
+        "Process audio chunk: decode base64 WebM/Opus -> STT -> AI response -> TTS (optional) -> encode back to base64 WebM/Opus"
+        if not self.groq_client:
+            return {'error': 'Groq client not configured', 'status': 'error'}
 
         try:
             # Decode base64 WebM/Opus audio
@@ -107,22 +131,22 @@ class InterviewService:
             # Generate AI response
             ai_response = await self.continue_interview(conversation_history or [], job_id)
 
-            # Generate speech from AI response
+            # Generate speech from AI response using pyttsx3
             speech_bytes = await self.generate_speech(ai_response)
 
             # Try to convert speech to WebM/Opus if libraries are available
             if AudioSegment is not None:
                 try:
                     # Convert speech to WebM/Opus
-                    speech_segment = AudioSegment.from_file(io.BytesIO(speech_bytes), format="mp3")  # OpenAI returns MP3
+                    speech_segment = AudioSegment.from_file(io.BytesIO(speech_bytes), format="wav")  # pyttsx3 generates WAV
                     webm_buffer = io.BytesIO()
                     speech_segment.export(webm_buffer, format="webm", codec="opus")
                     webm_data = webm_buffer.getvalue()
                 except Exception as conv_error:
-                    logger.warning(f'Audio conversion failed: {conv_error}, using MP3 directly')
+                    logger.warning(f'Audio conversion failed: {conv_error}, using WAV directly')
                     webm_data = speech_bytes
             else:
-                logger.warning('Audio processing libraries not available, using MP3 directly')
+                logger.warning('Audio processing libraries not available, using WAV directly')
                 webm_data = speech_bytes
 
             # Encode back to base64

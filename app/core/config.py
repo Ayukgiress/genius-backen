@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     # Groq AI Configuration (free tier)
     GROQ_API_KEY: Optional[str] = None
 
+    # ElevenLabs TTS Configuration
+    ELEVENLABS_API_KEY: Optional[str] = None
+
     # Stripe Configuration
     STRIPE_PUBLISHABLE_KEY: Optional[str] = Field(default=None, validation_alias=AliasChoices("STRIPE_PUBLISHABLE_KEY", "PUBLISHABLE_KEY"))
     STRIPE_SECRET_KEY: Optional[str] = Field(default=None, validation_alias=AliasChoices("STRIPE_SECRET_KEY", "SECRET_KEY_STRIPE"))
