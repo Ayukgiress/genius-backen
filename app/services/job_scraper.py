@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import re
 import httpx
 import logging
@@ -115,56 +116,264 @@ class JobScraper:
             "is_remote": True,
         }
     
-    async def fetch_remoteok_jobs(self, tag: str = "remote") -> List[Dict]:
-        """Fetch jobs from RemoteOK API (free, no auth required)."""
+    async def fetch_themuse_jobs(self, page: int = 0) -> List[Dict]:
+        """Fetch jobs from The Muse API (free, no auth required)."""
         try:
             session = await self._get_session()
-            url = f"https://remoteok.com/api?tag={tag}"
+            url = f"https://www.themuse.com/api/public/jobs?page={page}&descending=true"
             response = await session.get(url, timeout=httpx.Timeout(30.0))
             if response.status_code == 200:
-                text = response.text
-                return self._parse_remoteok_jobs(text)
+                data = response.json()
+                jobs = data.get("results", [])
+                logger.info(f"The Muse jobs count: {len(jobs)}")
+                return [self._transform_themuse_job(job) for job in jobs]
             else:
-                logger.warning(f"RemoteOK API returned status {response.status_code}")
+                logger.warning(f"The Muse API returned status {response.status_code}")
                 return []
         except Exception as e:
-            logger.error(f"Error fetching RemoteOK jobs: {e}")
+            logger.error(f"Error fetching The Muse jobs: {e}")
             return []
-    
-    def _parse_remoteok_jobs(self, text: str) -> List[Dict]:
-        """Parse RemoteOK JSON response from text."""
-        jobs = []
-        try:
-            data = json.loads(text)
-            for job in data:
-                if job.get("id") and job.get("position"):
-                    jobs.append(self._transform_remoteok_job(job))
-        except json.JSONDecodeError as e:
-            logger.error(f"Error parsing RemoteOK jobs: {e}")
-        return jobs
-    
-    def _transform_remoteok_job(self, job: Dict) -> Dict:
-        """Transform RemoteOK job format to our schema."""
+
+    def _transform_themuse_job(self, job: Dict) -> Dict:
+        """Transform The Muse job format to our schema."""
         return {
-            "id": f"remoteok_{job.get('id', '')}",
-            "title": job.get("position", ""),
-            "company": job.get("company", ""),
-            "location": job.get("location", "Remote"),
-            "description": job.get("description", ""),
-            "requirements": ", ".join(job.get("tags", [])),
-            "salary_range": self._extract_salary(job.get("salary", "")),
+            "id": f"themuse_{job.get('id', '')}",
+            "title": job.get("name", ""),
+            "company": job.get("company", {}).get("name", ""),
+            "location": job.get("locations", [{}])[0].get("name", "Remote") if job.get("locations") else "Remote",
+            "description": job.get("contents", ""),
+            "requirements": "",  # The Muse doesn't provide structured requirements
+            "salary_range": "",
             "job_type": "Full-time",
-            "source": "RemoteOK",
-            "source_url": f"https://remoteok.com/l/{job.get('id', '')}",
-            "posted_at": datetime.fromtimestamp(job.get("date", 0)) if job.get("date") else datetime.now(),
-            "is_remote": True,
+            "source": "The Muse",
+            "source_url": job.get("refs", {}).get("landing_page", ""),
+            "posted_at": datetime.fromisoformat(job.get("publication_date", datetime.now().isoformat()).replace("Z", "+00:00")) if job.get("publication_date") else datetime.now(),
+            "is_remote": "remote" in job.get("name", "").lower() or any("remote" in loc.get("name", "").lower() for loc in job.get("locations", [])),
         }
-    
-    def _extract_salary(self, salary_str: str) -> str:
-        """Extract salary range from RemoteOK format."""
-        if not salary_str:
-            return ""
-        return salary_str.replace("$", "$").replace("USD", "")
+
+    async def fetch_jsearch_jobs(self, query: str = "", page: int = 1, num_pages: int = 1) -> List[Dict]:
+        """Fetch jobs from JSearch API (free tier: 200 requests/month, requires RAPIDAPI_KEY env var)."""
+        try:
+            # JSearch requires an API key from RapidAPI
+            api_key = os.getenv("JSEARCH_API_KEY") or os.getenv("RAPIDAPI_KEY")
+            if not api_key:
+                logger.info("JSearch API key not available (set RAPIDAPI_KEY env var for 200 free requests/month), skipping")
+                return []
+
+            session = await self._get_session()
+            headers = {
+                "X-RapidAPI-Key": api_key,
+                "X-RapidAPI-Host": "jsearch.p.rapidapi.com"
+            }
+
+            all_jobs = []
+            for current_page in range(page, page + num_pages):
+                params = {
+                    "query": query or "developer",
+                    "page": str(current_page),
+                    "num_pages": "1"
+                }
+
+                response = await session.get(
+                    "https://jsearch.p.rapidapi.com/search",
+                    headers=headers,
+                    params=params,
+                    timeout=httpx.Timeout(30.0)
+                )
+
+                if response.status_code == 200:
+                    data = response.json()
+                    jobs = data.get("data", [])
+                    all_jobs.extend([self._transform_jsearch_job(job) for job in jobs])
+                else:
+                    logger.warning(f"JSearch API returned status {response.status_code} for page {current_page}")
+                    break
+
+            logger.info(f"JSearch jobs count: {len(all_jobs)}")
+            return all_jobs
+        except Exception as e:
+            logger.error(f"Error fetching JSearch jobs: {e}")
+            return []
+
+    async def fetch_jobdatalake_jobs(self, page: int = 1, per_page: int = 20, query: str = "") -> List[Dict]:
+        """Fetch jobs from JobDataLake API (free tier: 1000 credits, requires JOBDATALAKE_API_KEY env var)."""
+        try:
+            # Note: This requires an API key. For now, we'll skip if no key is available
+            api_key = os.getenv("JOBDATALAKE_API_KEY")
+            if not api_key:
+                logger.info("JobDataLake API key not available (free tier available at jobdatalake.com), skipping")
+                return []
+
+            session = await self._get_session()
+            headers = {"X-API-Key": api_key}
+            params = {"page": page, "per_page": per_page}
+            if query:
+                params["q"] = query
+
+            response = await session.get("https://api.jobdatalake.com/v1/jobs", headers=headers, params=params, timeout=httpx.Timeout(30.0))
+            if response.status_code == 200:
+                data = response.json()
+                jobs = data.get("data", [])
+                logger.info(f"JobDataLake jobs count: {len(jobs)}")
+                return [self._transform_jobdatalake_job(job) for job in jobs]
+            else:
+                logger.warning(f"JobDataLake API returned status {response.status_code}")
+                return []
+        except Exception as e:
+            logger.error(f"Error fetching JobDataLake jobs: {e}")
+            return []
+
+    async def fetch_adzuna_jobs(self, query: str = "", location: str = "", page: int = 1) -> List[Dict]:
+        """Fetch jobs from Adzuna API (free tier available, requires ADZUNA_APP_ID and ADZUNA_APP_KEY env vars)."""
+        try:
+            # Note: This requires app_id and app_key
+            app_id = os.getenv("ADZUNA_APP_ID")
+            app_key = os.getenv("ADZUNA_APP_KEY")
+            if not app_id or not app_key:
+                logger.info("Adzuna API credentials not available (free signup at developer.adzuna.com), skipping")
+                return []
+
+            session = await self._get_session()
+            params = {"app_id": app_id, "app_key": app_key, "results_per_page": 20}
+
+            if query:
+                params["what"] = query
+            if location:
+                params["where"] = location
+
+            url = f"https://api.adzuna.com/v1/api/jobs/us/search/{page}"
+            response = await session.get(url, params=params, timeout=httpx.Timeout(30.0))
+            if response.status_code == 200:
+                data = response.json()
+                jobs = data.get("results", [])
+                logger.info(f"Adzuna jobs count: {len(jobs)}")
+                return [self._transform_adzuna_job(job) for job in jobs]
+            else:
+                logger.warning(f"Adzuna API returned status {response.status_code}")
+                return []
+        except Exception as e:
+            logger.error(f"Error fetching Adzuna jobs: {e}")
+            return []
+
+    async def fetch_indeed_jobs(self, query: str = "", location: str = "", start: int = 0) -> List[Dict]:
+        """Fetch jobs from Indeed Publisher API (free, requires INDEED_PUBLISHER_ID env var from indeed.com/publisher)."""
+        try:
+            publisher_id = os.getenv("INDEED_PUBLISHER_ID")
+            if not publisher_id:
+                logger.info("Indeed Publisher ID not available (signup at indeed.com/publisher), skipping")
+                return []
+
+            session = await self._get_session()
+            params = {
+                "publisher": publisher_id,
+                "v": "2",
+                "format": "json",
+                "start": start,
+                "limit": 25,
+                "highlight": 1,
+                "latlong": 1
+            }
+
+            if query:
+                params["q"] = query
+            if location:
+                params["l"] = location
+
+            response = await session.get("https://api.indeed.com/ads/apisearch", params=params, timeout=httpx.Timeout(30.0))
+            if response.status_code == 200:
+                data = response.json()
+                jobs = data.get("results", [])
+                logger.info(f"Indeed jobs count: {len(jobs)}")
+                return [self._transform_indeed_job(job) for job in jobs]
+            else:
+                logger.warning(f"Indeed API returned status {response.status_code}")
+                return []
+        except Exception as e:
+            logger.error(f"Error fetching Indeed jobs: {e}")
+            return []
+
+    def _transform_jsearch_job(self, job: Dict) -> Dict:
+        """Transform JSearch job format to our schema."""
+        employer = job.get("employer", {})
+        salary_info = job.get("salary", {})
+
+        salary_range = ""
+        if salary_info.get("min") and salary_info.get("max"):
+            salary_range = f"${salary_info['min']} - ${salary_info['max']}"
+        elif salary_info.get("min"):
+            salary_range = f"${salary_info['min']}+"
+
+        return {
+            "id": f"jsearch_{job.get('job_id', '')}",
+            "title": job.get("job_title", ""),
+            "company": employer.get("company_name", ""),
+            "location": job.get("job_city", "") + ", " + job.get("job_state", "") if job.get("job_city") else "Remote",
+            "description": job.get("job_description", ""),
+            "requirements": ", ".join(job.get("job_required_skills", [])),
+            "salary_range": salary_range,
+            "job_type": job.get("job_employment_type", "Full-time"),
+            "source": "JSearch",
+            "source_url": job.get("job_apply_link", ""),
+            "posted_at": datetime.fromisoformat(job.get("job_posted_at_datetime_utc", datetime.now().isoformat()).replace("Z", "+00:00")) if job.get("job_posted_at_datetime_utc") else datetime.now(),
+            "is_remote": job.get("job_is_remote", False),
+        }
+
+    def _transform_jobdatalake_job(self, job: Dict) -> Dict:
+        """Transform JobDataLake job format to our schema."""
+        salary_min = job.get("salary_min_usd")
+        salary_max = job.get("salary_max_usd")
+        salary_range = ""
+        if salary_min and salary_max:
+            salary_range = f"${salary_min:,} - ${salary_max:,}"
+
+        return {
+            "id": f"jobdatalake_{job.get('handle', '')}",
+            "title": job.get("title", ""),
+            "company": job.get("company", {}).get("name", ""),
+            "location": job.get("location", {}).get("text", "Remote"),
+            "description": job.get("description", ""),
+            "requirements": ", ".join(job.get("skills", [])),
+            "salary_range": salary_range,
+            "job_type": job.get("employment_type", "Full-time"),
+            "source": "JobDataLake",
+            "source_url": job.get("apply_url", ""),
+            "posted_at": datetime.fromtimestamp(job.get("posted_at", 0) / 1000) if job.get("posted_at") else datetime.now(),
+            "is_remote": job.get("remote_type") == "fully_remote",
+        }
+
+    def _transform_adzuna_job(self, job: Dict) -> Dict:
+        """Transform Adzuna job format to our schema."""
+        return {
+            "id": f"adzuna_{job.get('id', '')}",
+            "title": job.get("title", ""),
+            "company": job.get("company", {}).get("display_name", ""),
+            "location": job.get("location", {}).get("display_name", ""),
+            "description": job.get("description", ""),
+            "requirements": "",  # Adzuna doesn't provide structured requirements in basic results
+            "salary_range": job.get("salary_min", ""),
+            "job_type": job.get("contract_type", "Full-time"),
+            "source": "Adzuna",
+            "source_url": job.get("redirect_url", ""),
+            "posted_at": datetime.fromisoformat(job.get("created", datetime.now().isoformat()).replace("Z", "+00:00")) if job.get("created") else datetime.now(),
+            "is_remote": False,  # Adzuna doesn't specify remote in basic results
+        }
+
+    def _transform_indeed_job(self, job: Dict) -> Dict:
+        """Transform Indeed job format to our schema."""
+        return {
+            "id": f"indeed_{job.get('jobkey', '')}",
+            "title": job.get("jobtitle", ""),
+            "company": job.get("company", ""),
+            "location": job.get("formattedLocation", ""),
+            "description": job.get("snippet", ""),
+            "requirements": "",
+            "salary_range": job.get("formattedRelativeTime", ""),
+            "job_type": "Full-time",
+            "source": "Indeed",
+            "source_url": job.get("url", ""),
+            "posted_at": datetime.fromtimestamp(job.get("date", 0)) if job.get("date") else datetime.now(),
+            "is_remote": "remote" in job.get("jobtitle", "").lower() or "remote" in job.get("snippet", "").lower(),
+        }
     
     def _extract_requirements_from_html(self, html: str) -> str:
         """Extract text content from HTML description."""
@@ -175,75 +384,37 @@ class JobScraper:
         text = re.sub(r'\s+', ' ', text)
         return text.strip()
     
-    async def fetch_indeed_jobs(self, query: str, location: str = "remote", limit: int = 10) -> List[Dict]:
-        """Fetch jobs from Indeed (requires scraping, limited)."""
-        try:
-            session = await self._get_session()
-            url = f"https://www.indeed.com/jobs?q={query}&l={location}&limit={limit}"
-            response = await session.get(url, timeout=httpx.Timeout(30.0))
-            if response.status_code == 200:
-                html = response.text
-                return self._parse_indeed_jobs(html, query)
-            return []
-        except Exception as e:
-            logger.error(f"Error fetching Indeed jobs: {e}")
-            return []
-    
-    def _parse_indeed_jobs(self, html: str, query: str) -> List[Dict]:
-        """Parse Indeed job listings from HTML."""
-        jobs = []
-        try:
-            import re
-            job_cards = re.findall(r'job-card-container[^>]*data-jk="([^"]+)"[^>]*>(.*?)</div>', html, re.DOTALL)
-            for jk, card_html in job_cards[:10]:
-                title_match = re.search(r'jobTitle[^>]*>([^<]+)<', card_html)
-                company_match = re.search(r'companyName[^>]*>([^<]+)<', card_html)
-                location_match = re.search(r'companyLocation[^>]*>([^<]+)<', card_html)
-                summary_match = re.search(r'jobSnippet[^>]*>([^<]+)<', card_html)
-                
-                if title_match:
-                    jobs.append({
-                        "id": f"indeed_{jk}",
-                        "title": title_match.group(1).strip(),
-                        "company": company_match.group(1).strip() if company_match else "Unknown",
-                        "location": location_match.group(1).strip() if location_match else "Remote",
-                        "description": summary_match.group(1).strip() if summary_match else "",
-                        "requirements": "",
-                        "salary_range": "",
-                        "job_type": "Full-time",
-                        "source": "Indeed",
-                        "source_url": f"https://www.indeed.com/viewjob?jk={jk}",
-                        "posted_at": datetime.now(),
-                        "is_remote": "remote" in location_match.group(1).lower() if location_match else False,
-                    })
-        except Exception as e:
-            logger.error(f"Error parsing Indeed jobs: {e}")
-        return jobs
+
     
     async def scrape_all_jobs(self, force_refresh: bool = False) -> List[Dict]:
         """Scrape jobs from all sources and combine."""
         if not force_refresh and self._cached_jobs and self._last_fetch:
             if (datetime.now() - self._last_fetch).seconds < self.cache_ttl_seconds:
                 return self._cached_jobs
-        
+
         logger.info("Scraping jobs from external sources...")
         all_jobs = []
-        
+
         tasks = [
             self.fetch_remotive_jobs("remote"),
-            self.fetch_remoteok_jobs("remote"),
+            self.fetch_themuse_jobs(0),
+            self.fetch_themuse_jobs(1),  # Get more jobs from page 1
+            self.fetch_jsearch_jobs("developer", 1, 2),  # Requires API key, get 2 pages
+            self.fetch_jobdatalake_jobs(1, 20),  # Requires API key
+            self.fetch_adzuna_jobs("", "", 1),  # Requires API key
+            self.fetch_indeed_jobs("", "", 0),  # Requires publisher ID
         ]
-        
+
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        
+
         for result in results:
             if isinstance(result, list):
                 all_jobs.extend(result)
-        
+
         self._cached_jobs = all_jobs
         self._last_fetch = datetime.now()
         logger.info(f"Scraped {len(all_jobs)} jobs total")
-        
+
         return all_jobs
 
 

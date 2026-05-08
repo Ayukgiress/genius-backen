@@ -100,6 +100,11 @@ async def startup():
             await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_status VARCHAR(50) DEFAULT 'inactive';"))
             await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_id VARCHAR(255);"))
         print("Database tables created/updated successfully!")
+
+        # Initialize job scraping service
+        from app.services.job_scraper import job_service
+        await job_service.initialize()
+        print("Job scraping service initialized successfully!")
     except Exception as e:
         print(f"Error during startup: {e}")
 
