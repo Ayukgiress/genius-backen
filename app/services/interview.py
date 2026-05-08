@@ -61,26 +61,32 @@ class InterviewService:
             raise ValueError('Groq client not configured')
 
         try:
-            # Ensure audio_file is a file-like object with proper name
             filename = getattr(audio_file, 'name', 'audio.webm')
+            # Read the bytes so we can pass them properly
+            audio_bytes = audio_file.read()
+            
+            if not audio_bytes or len(audio_bytes) < 100:
+                logger.warning(f"Audio too small to transcribe: {len(audio_bytes) if audio_bytes else 0} bytes")
+                return ""
 
-            # Determine content-type based on filename
-            content_type = "audio/webm" if filename.endswith('.webm') else "audio/wav"
-
-            # Use a tuple for the file parameter to provide more metadata
-            file_data = (filename, audio_file, content_type)
+            # Groq needs (filename, bytes, mimetype) tuple
+            if filename.endswith('.wav'):
+                content_type = "audio/wav"
+            else:
+                content_type = "audio/webm"
+                filename = "audio.webm"
 
             translation = await self.groq_client.audio.transcriptions.create(
-                file=file_data,
+                file=(filename, audio_bytes, content_type),
                 model='whisper-large-v3',
                 response_format='text'
             )
-            return translation
+            return translation if translation else ""
         except Exception as e:
             # Handle common Whisper errors that should not crash the interview
             error_msg = str(e).lower()
             if "could not process file" in error_msg or "invalid_request_error" in error_msg:
-                logger.warning(f"Whisper could not process audio (likely too short or silent): {e}")
+                logger.warning(f"Whisper rejected audio: {e}")
                 return ""
             
             logger.error(f'STT error: {e}')

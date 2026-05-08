@@ -167,32 +167,33 @@ async def send_audio_message(
         if "error" in result:
             raise HTTPException(status_code=500, detail=result["error"])
 
-        # Save user audio transcript as user message
+        # ← Handle no speech detected — return last AI message instead of crashing
+        if result.get("status") == "no_speech" or not result.get("transcript"):
+            last_ai_msg = next(
+                (m for m in reversed(messages) if m.role == "assistant"), None
+            )
+            if last_ai_msg:
+                return last_ai_msg
+            raise HTTPException(status_code=422, detail="No speech detected in audio")
+
+        # Save user transcript
         if result.get("transcript"):
             user_msg = InterviewMessageCreate(
                 role="user",
                 content=result["transcript"]
             )
-            await create_interview_message(
-                db,
-                interview_id,
-                user_msg,
-                transcript=result["transcript"]
-            )
+            await create_interview_message(db, interview_id, user_msg)
 
-        # Save AI response and audio
+        # Save and return AI response
         if result.get("ai_text"):
             ai_msg = InterviewMessageCreate(
                 role="assistant",
                 content=result["ai_text"]
             )
             saved_ai_msg = await create_interview_message(
-                db,
-                interview_id,
-                ai_msg,
+                db, interview_id, ai_msg,
                 audio_data=result.get("ai_audio_base64")
             )
-
             return saved_ai_msg
 
         raise HTTPException(status_code=500, detail="No AI response generated")
