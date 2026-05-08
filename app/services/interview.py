@@ -62,16 +62,27 @@ class InterviewService:
 
         try:
             # Ensure audio_file is a file-like object with proper name
-            if hasattr(audio_file, 'name') and not audio_file.name:
-                audio_file.name = "audio.webm"
+            filename = getattr(audio_file, 'name', 'audio.webm')
+
+            # Determine content-type based on filename
+            content_type = "audio/webm" if filename.endswith('.webm') else "audio/wav"
+
+            # Use a tuple for the file parameter to provide more metadata
+            file_data = (filename, audio_file, content_type)
 
             translation = await self.groq_client.audio.transcriptions.create(
-                file=audio_file,
+                file=file_data,
                 model='whisper-large-v3',
                 response_format='text'
             )
             return translation
         except Exception as e:
+            # Handle common Whisper errors that should not crash the interview
+            error_msg = str(e).lower()
+            if "could not process file" in error_msg or "invalid_request_error" in error_msg:
+                logger.warning(f"Whisper could not process audio (likely too short or silent): {e}")
+                return ""
+            
             logger.error(f'STT error: {e}')
             raise e
 
@@ -114,17 +125,43 @@ class InterviewService:
         try:
             # Decode base64 WebM/Opus audio
             if not base64_audio or base64_audio.strip() == "":
+                logger.warning("Empty base64 audio data received")
                 return {'error': 'Empty base64 audio data', 'status': 'error'}
 
+            logger.info(f"Processing audio chunk, base64 length: {len(base64_audio)}")
             audio_data = base64.b64decode(base64_audio)
+            logger.info(f"Decoded audio data size: {len(audio_data)} bytes")
+            
             if not audio_data or len(audio_data) == 0:
+                logger.warning("Decoded audio data is empty")
                 return {'error': 'Decoded audio data is empty', 'status': 'error'}
 
-            audio_buffer = io.BytesIO(audio_data)
-            audio_buffer.name = "audio.webm"  # Set filename for Groq API
+            # Convert WebM to WAV for better Whisper compatibility
+            if AudioSegment is not None:
+                try:
+                    logger.info("Converting WebM audio to WAV for transcription...")
+                    # Validate WebM data before conversion
+                    webm_buffer = io.BytesIO(audio_data)
+                    webm_segment = AudioSegment.from_file(webm_buffer, format="webm")
+                    wav_buffer = io.BytesIO()
+                    webm_segment.export(wav_buffer, format="wav")
+                    wav_buffer.seek(0)
+                    wav_buffer.name = "audio.wav"
+                    audio_buffer = wav_buffer
+                    logger.info("Audio conversion successful")
+                except Exception as conv_error:
+                    logger.warning(f'Audio conversion failed (possibly invalid WebM data): {conv_error}, using WebM directly')
+                    audio_buffer = io.BytesIO(audio_data)
+                    audio_buffer.name = "audio.webm"
+            else:
+                logger.warning('Audio processing libraries not available, using WebM directly')
+                audio_buffer = io.BytesIO(audio_data)
+                audio_buffer.name = "audio.webm"
 
             # Transcribe audio using Groq Whisper
+            logger.info("Sending to Groq Whisper for transcription...")
             transcript = await self.transcribe_audio(audio_buffer)
+            logger.info(f"Transcription result: '{transcript}'")
 
             if not transcript or transcript.strip() == "":
                 return {
