@@ -68,12 +68,20 @@ async def create_new_interview(
         start_result = await interview_service.start_interview(interview_in.job_id, resume_content)
         initial_message_content = start_result["initial_message"]
 
+        # Generate audio for the initial message
+        initial_audio = await interview_service.text_to_speech_base64(initial_message_content)
+
         # Save the initial AI message
         ai_message_data = InterviewMessageCreate(
             role="assistant",
             content=initial_message_content
         )
-        initial_message = await create_interview_message(db, interview.id, ai_message_data)
+        initial_message = await create_interview_message(
+            db, 
+            interview.id, 
+            ai_message_data,
+            audio_data=initial_audio
+        )
         interview.__dict__['messages'] = [initial_message]
     except Exception as e:
         # If AI fails, start with empty messages
@@ -128,7 +136,18 @@ async def send_message(
             role="assistant",
             content=ai_response_content
         )
-        ai_message = await create_interview_message(db, interview_id, ai_message_data)
+        
+        # Generate audio if requested
+        ai_audio = None
+        if message_in.generate_audio:
+            ai_audio = await interview_service.text_to_speech_base64(ai_response_content)
+
+        ai_message = await create_interview_message(
+            db, 
+            interview_id, 
+            ai_message_data,
+            audio_data=ai_audio
+        )
 
         return ai_message
 

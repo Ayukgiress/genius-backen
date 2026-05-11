@@ -73,7 +73,7 @@ async def create_interview_message(
         content=message.content,
         transcript=transcript,
         visual_data=visual_data,
-        audio_data=audio_data
+        audio_data=audio_data if audio_data else getattr(message, 'audio_data', None)
     )
     db.add(db_message)
     await db.commit()

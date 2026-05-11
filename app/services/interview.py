@@ -165,6 +165,33 @@ class InterviewService:
             logger.error(f'pyttsx3 TTS error: {e}')
             raise e
 
+    async def text_to_speech_base64(self, text: str) -> Optional[str]:
+        """Convert text to speech and return as base64 encoded string."""
+        try:
+            # Generate speech from AI response
+            speech_bytes = await self.generate_speech(text)
+
+            # Try to convert speech to MP3 if libraries are available
+            if AudioSegment is not None:
+                try:
+                    # Convert speech to MP3
+                    speech_segment = AudioSegment.from_file(io.BytesIO(speech_bytes), format="wav")  # TTS generates WAV
+                    mp3_buffer = io.BytesIO()
+                    speech_segment.export(mp3_buffer, format="mp3")
+                    audio_data_final = mp3_buffer.getvalue()
+                except Exception as conv_error:
+                    logger.warning(f"Audio conversion failed: {conv_error}, using WAV directly")
+                    audio_data_final = speech_bytes
+            else:
+                logger.warning("Audio processing libraries not available, using WAV directly")
+                audio_data_final = speech_bytes
+
+            # Encode to base64
+            return base64.b64encode(audio_data_final).decode("utf-8")
+        except Exception as e:
+            logger.error(f"Text-to-speech conversion error: {e}")
+            return None
+
     async def process_audio_chunk(self, base64_audio: str, job_id: str, conversation_history: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
         "Process audio chunk: decode base64 WebM/Opus -> STT -> AI response -> TTS (optional) -> encode back to base64 WebM/Opus"
         if not self.groq_client:
@@ -222,26 +249,8 @@ class InterviewService:
             # Generate AI response
             ai_response = await self.continue_interview(conversation_history or [], job_id)
 
-            # Generate speech from AI response using pyttsx3
-            speech_bytes = await self.generate_speech(ai_response)
-
-            # Try to convert speech to MP3 if libraries are available
-            if AudioSegment is not None:
-                try:
-                    # Convert speech to MP3
-                    speech_segment = AudioSegment.from_file(io.BytesIO(speech_bytes), format="wav")  # TTS generates WAV
-                    mp3_buffer = io.BytesIO()
-                    speech_segment.export(mp3_buffer, format="mp3")
-                    audio_data_final = mp3_buffer.getvalue()
-                except Exception as conv_error:
-                    logger.warning(f'Audio conversion failed: {conv_error}, using WAV directly')
-                    audio_data_final = speech_bytes
-            else:
-                logger.warning('Audio processing libraries not available, using WAV directly')
-                audio_data_final = speech_bytes
-
-            # Encode back to base64
-            ai_audio_base64 = base64.b64encode(audio_data_final).decode('utf-8')
+            # Generate speech from AI response
+            ai_audio_base64 = await self.text_to_speech_base64(ai_response)
 
             return {
                 'transcript': transcript,

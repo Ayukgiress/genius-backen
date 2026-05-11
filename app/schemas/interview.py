@@ -7,7 +7,7 @@ class InterviewMessageBase(BaseModel):
     content: str
 
 class InterviewMessageCreate(InterviewMessageBase):
-    pass
+    generate_audio: bool = False
 
 class InterviewMessageResponse(InterviewMessageBase):
     id: int
