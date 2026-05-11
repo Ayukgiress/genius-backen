@@ -216,6 +216,23 @@ async def send_audio_message(
             )
             return saved_ai_msg
 
+        # If we have a transcript but no AI text (should be handled by fallback in service, but just in case)
+        if transcript:
+            logger.warning(f"Returning user transcript without AI response for interview {interview_id}")
+            # Return a dummy response or just the transcript info
+            # Usually we want to return a message, so we'll return a JSONResponse with the transcript
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "status": "success",
+                    "transcript": transcript,
+                    "content": "I'm listening, please continue.",
+                    "role": "assistant",
+                    "id": -2
+                }
+            )
+
         raise HTTPException(status_code=500, detail="No AI response generated")
 
     except Exception as e:

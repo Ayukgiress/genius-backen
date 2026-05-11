@@ -267,9 +267,10 @@ class InterviewService:
             # Transcribe audio using Groq Whisper
             logger.info("Sending to Groq Whisper for transcription...")
             transcript = await self.transcribe_audio(audio_buffer)
-            logger.info(f"Transcription result: '{transcript}'")
+            logger.info(f"✅ Transcription result: '{transcript}'")
 
             if not transcript or transcript.strip() == "":
+                logger.warning("No speech detected in audio chunk (empty transcript)")
                 return {
                     'transcript': '',
                     'ai_text': None,
@@ -278,10 +279,23 @@ class InterviewService:
                 }
 
             # Generate AI response
+            logger.info("Generating AI response based on transcript...")
             ai_response = await self.continue_interview(conversation_history or [], job_id)
+            logger.info(f"✅ AI Response generated: '{ai_response[:100]}...'")
+
+            if not ai_response or ai_response.strip() == "":
+                 logger.warning("AI generated an empty response")
+                 # Fallback response to keep interview moving
+                 ai_response = "I see. Could you please tell me more about that, or should we move on to the next question?"
+                 logger.info(f"Using fallback AI response: '{ai_response}'")
 
             # Generate speech from AI response
+            logger.info("Converting AI response to speech...")
             ai_audio_base64 = await self.text_to_speech_base64(ai_response)
+            if ai_audio_base64:
+                logger.info(f"AI speech generated: {len(ai_audio_base64)} base64 chars")
+            else:
+                logger.warning("AI speech generation failed (using text-only)")
 
             return {
                 'transcript': transcript,
