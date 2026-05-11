@@ -97,7 +97,7 @@ class InterviewService:
         # Try ElevenLabs first
         if self.elevenlabs_client:
             try:
-                logger.info("Generating speech with ElevenLabs")
+                logger.info(f"Generating speech with ElevenLabs for text: {text[:50]}...")
                 from elevenlabs import VoiceSettings
                 audio_stream = await self.elevenlabs_client.generate(
                     text=text,
@@ -113,14 +113,19 @@ class InterviewService:
                 audio_data = b""
                 async for chunk in audio_stream:
                     audio_data += chunk
-                return audio_data
+                
+                if audio_data:
+                    logger.info(f"ElevenLabs TTS successful, generated {len(audio_data)} bytes")
+                    return audio_data
+                else:
+                    logger.warning("ElevenLabs generated empty audio")
             except Exception as e:
                 logger.warning(f'ElevenLabs TTS failed: {e}')
 
         # Try OpenAI TTS
         if self.openai_client:
             try:
-                logger.info("Generating speech with OpenAI")
+                logger.info(f"Generating speech with OpenAI for text: {text[:50]}...")
                 response = await self.openai_client.audio.speech.create(
                     model="tts-1",
                     voice="alloy",
@@ -129,12 +134,17 @@ class InterviewService:
                 audio_data = b""
                 async for chunk in response.aiter_bytes():
                     audio_data += chunk
-                return audio_data
+                
+                if audio_data:
+                    logger.info(f"OpenAI TTS successful, generated {len(audio_data)} bytes")
+                    return audio_data
+                else:
+                    logger.warning("OpenAI generated empty audio")
             except Exception as e:
                 logger.warning(f'OpenAI TTS failed: {e}')
 
         # Fallback to pyttsx3
-        logger.info("Falling back to pyttsx3 TTS")
+        logger.info(f"Falling back to pyttsx3 TTS for text: {text[:50]}...")
         import pyttsx3
         import tempfile
         import os
@@ -155,12 +165,24 @@ class InterviewService:
                 with open(temp_path, 'rb') as f:
                     audio_data = f.read()
                 return audio_data
+            except Exception as py_error:
+                logger.error(f"pyttsx3 inner error: {py_error}")
+                raise py_error
             finally:
                 if 'temp_path' in locals():
-                    os.unlink(temp_path)
+                    try:
+                        os.unlink(temp_path)
+                    except:
+                        pass
 
         try:
-            return await asyncio.to_thread(_generate_audio)
+            audio_data = await asyncio.to_thread(_generate_audio)
+            if audio_data:
+                logger.info(f"pyttsx3 TTS successful, generated {len(audio_data)} bytes")
+                return audio_data
+            else:
+                logger.warning("pyttsx3 generated empty audio")
+                raise ValueError("pyttsx3 generated empty audio")
         except Exception as e:
             logger.error(f'pyttsx3 TTS error: {e}')
             raise e
