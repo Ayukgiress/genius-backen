@@ -187,7 +187,8 @@ async def send_audio_message(
             raise HTTPException(status_code=500, detail=result["error"])
 
         # Handle no speech detected — return 200 with a sentinel so frontend knows to stay quiet
-        if result.get("status") == "no_speech" or not result.get("transcript"):
+        transcript = result.get("transcript")
+        if result.get("status") == "no_speech" or not transcript or transcript.strip() == "":
             from fastapi.responses import JSONResponse
             return JSONResponse(
                 status_code=200,
@@ -203,10 +204,11 @@ async def send_audio_message(
             await create_interview_message(db, interview_id, user_msg)
 
         # Save and return AI response
-        if result.get("ai_text"):
+        ai_text = result.get("ai_text")
+        if ai_text:
             ai_msg = InterviewMessageCreate(
                 role="assistant",
-                content=result["ai_text"]
+                content=ai_text
             )
             saved_ai_msg = await create_interview_message(
                 db, interview_id, ai_msg,

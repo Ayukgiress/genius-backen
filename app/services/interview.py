@@ -65,11 +65,11 @@ class InterviewService:
             # Read the bytes so we can pass them properly
             audio_bytes = audio_file.read()
             
-            if not audio_bytes or len(audio_bytes) < 100:
+            if not audio_bytes or len(audio_bytes) < 50:
                 logger.warning(f"Audio too small to transcribe: {len(audio_bytes) if audio_bytes else 0} bytes")
                 return ""
 
-            # Groq needs (filename, bytes, mimetype) tuple
+            logger.info(f"Sending {len(audio_bytes)} bytes to Groq Whisper for transcription...")
             if filename.endswith('.wav'):
                 content_type = "audio/wav"
             else:
@@ -151,7 +151,12 @@ class InterviewService:
 
         def _generate_audio():
             try:
-                engine = pyttsx3.init()
+                try:
+                    engine = pyttsx3.init()
+                except (RuntimeError, Exception) as init_err:
+                    logger.error(f"Failed to initialize pyttsx3 (missing espeak?): {init_err}")
+                    return None
+
                 # Set properties if needed
                 engine.setProperty('rate', 180)  # Speed
                 engine.setProperty('volume', 0.9)  # Volume
@@ -181,17 +186,21 @@ class InterviewService:
                 logger.info(f"pyttsx3 TTS successful, generated {len(audio_data)} bytes")
                 return audio_data
             else:
-                logger.warning("pyttsx3 generated empty audio")
-                raise ValueError("pyttsx3 generated empty audio")
+                logger.warning("pyttsx3 generated empty audio or failed to initialize")
+                return None
         except Exception as e:
             logger.error(f'pyttsx3 TTS error: {e}')
-            raise e
+            return None
 
     async def text_to_speech_base64(self, text: str) -> Optional[str]:
         """Convert text to speech and return as base64 encoded string."""
         try:
             # Generate speech from AI response
             speech_bytes = await self.generate_speech(text)
+            
+            if not speech_bytes:
+                logger.warning("No speech bytes generated, skipping audio encoding")
+                return None
 
             # Try to convert speech to MP3 if libraries are available
             if AudioSegment is not None:
