@@ -446,16 +446,20 @@ class InterviewService:
             model='llama-3.3-70b-versatile',
             messages=[
                 {'role': 'system', 'content': system_prompt},
-                {'role': 'user', 'content': 'Please start the interview by asking the first question.'}
+                {'role': 'user', 'content': 'Please start the interview by introducing yourself and asking the first question.'}
             ],
             temperature=0.7,
             max_tokens=1000
         )
 
         initial_message = response.choices[0].message.content
+        
+        # Generate audio for initial message
+        initial_audio_base64 = await self.text_to_speech_base64(initial_message)
 
         return {
             'initial_message': initial_message,
+            'initial_audio_base64': initial_audio_base64,
             'job_title': job_dict.get('title', 'Unknown Position'),
             'company': job_dict.get('company', 'Unknown Company')
         }

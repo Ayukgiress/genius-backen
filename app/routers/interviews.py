@@ -67,9 +67,7 @@ async def create_new_interview(
     try:
         start_result = await interview_service.start_interview(interview_in.job_id, resume_content)
         initial_message_content = start_result["initial_message"]
-
-        # Generate audio for the initial message
-        initial_audio = await interview_service.text_to_speech_base64(initial_message_content)
+        initial_audio = start_result.get("initial_audio_base64")
 
         # Save the initial AI message
         ai_message_data = InterviewMessageCreate(
