@@ -1,0 +1,171 @@
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from app.db.session import get_db
+from app.routers.deps import get_current_user
+from app.models.user import User
+from app.core.config import settings
+import stripe
+
+router = APIRouter(prefix="/payment", tags=["payment"])
+
+@router.post("/create-checkout-session")
+async def create_checkout_session(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Create a Stripe Checkout session for subscription."""
+    if not settings.STRIPE_SECRET_KEY:
+        raise HTTPException(status_code=500, detail="Stripe not configured")
+    
+    stripe.api_key = settings.STRIPE_SECRET_KEY
+
+    try:
+        # Create or retrieve Stripe customer
+        if current_user.stripe_customer_id:
+            customer = await run_in_threadpool(stripe.Customer.retrieve, current_user.stripe_customer_id)
+        else:
+            customer = await run_in_threadpool(
+                stripe.Customer.create,
+                email=current_user.email,
+                name=current_user.name,
+            )
+            current_user.stripe_customer_id = customer.id
+            db.add(current_user)
+            await db.commit()
+
+        # Create checkout session for Pro plan ($19/month)
+        checkout_session = await run_in_threadpool(
+            stripe.checkout.Session.create,
+            customer=customer.id,
+            payment_method_types=['card'],
+            line_items=[{
+                'price_data': {
+                    'currency': 'usd',
+                    'product_data': {
+                        'name': 'Pro Plan',
+                        'description': 'Unlimited AI Optimization, Priority Job Matching, Career Coaching Access, Custom Cover Letters, Interview Simulator',
+                    },
+                    'unit_amount': 1900,  # $19.00 in cents
+                    'recurring': {
+                        'interval': 'month',
+                    },
+                },
+                'quantity': 1,
+            }],
+            mode='subscription',
+            success_url=f"{settings.FRONTEND_URL}/payment/success?session_id={{CHECKOUT_SESSION_ID}}",
+            cancel_url=f"{settings.FRONTEND_URL}/pricing",
+        )
+
+        return {"checkout_url": checkout_session.url}
+
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/webhook")
+async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
+    """Handle Stripe webhook events."""
+    if not settings.STRIPE_SECRET_KEY:
+        raise HTTPException(status_code=500, detail="Stripe not configured")
+    
+    if not settings.STRIPE_WEBHOOK_SECRET:
+        raise HTTPException(status_code=500, detail="Stripe Webhook not configured")
+    
+    stripe.api_key = settings.STRIPE_SECRET_KEY
+    
+    payload = await request.body()
+    sig_header = request.headers.get('stripe-signature')
+
+    try:
+        event = await run_in_threadpool(
+            stripe.Webhook.construct_event,
+            payload, sig_header, settings.STRIPE_WEBHOOK_SECRET
+        )
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid payload")
+    except stripe.error.SignatureVerificationError:
+        raise HTTPException(status_code=400, detail="Invalid signature")
+
+    # Handle the event
+    if event['type'] == 'checkout.session.completed':
+        session = event['data']['object']
+        customer_id = getattr(session, 'customer', None)
+        subscription_id = getattr(session, 'subscription', None)
+
+        result = await db.execute(
+            select(User).where(User.stripe_customer_id == customer_id)
+        )
+        user = result.scalar_one_or_none()
+        if user:
+            user.subscription_plan = "pro"
+            user.subscription_status = "active"
+            user.subscription_id = subscription_id
+            
+            from app.crud.user_usage import reset_action_usage_for_month
+            from datetime import datetime
+            now = datetime.now()
+            await reset_action_usage_for_month(db, user.id, "job_matching", now.month, now.year)
+            
+            db.add(user)
+            await db.commit()
+            print(f"Pro upgrade & usage reset for user {user.id} ({user.email})")
+
+    elif event['type'] == 'invoice.paid':
+        invoice = event['data']['object']
+        billing_reason = getattr(invoice, 'billing_reason', None)
+
+        if billing_reason == 'subscription_create':
+            customer_id = getattr(invoice, 'customer', None)
+            subscription_id = getattr(invoice, 'subscription', None)
+
+            result = await db.execute(
+                select(User).where(User.stripe_customer_id == customer_id)
+            )
+            user = result.scalar_one_or_none()
+            if user:
+                user.subscription_plan = "pro"
+                user.subscription_status = "active"
+                user.subscription_id = subscription_id
+
+                from app.crud.user_usage import reset_action_usage_for_month
+                from datetime import datetime
+                now = datetime.now()
+                await reset_action_usage_for_month(db, user.id, "job_matching", now.month, now.year)
+
+                db.add(user)
+                await db.commit()
+                print(f"Pro upgrade from invoice for user {user.id} ({user.email})")
+        else:
+            # Subscription renewed - no action needed
+            pass
+
+    elif event['type'] == 'invoice.payment_failed':
+        invoice = event['data']['object']
+        customer_id = getattr(invoice, 'customer', None)
+
+        result = await db.execute(
+            select(User).where(User.stripe_customer_id == customer_id)
+        )
+        user = result.scalar_one_or_none()
+        if user:
+            user.subscription_status = "past_due"
+            db.add(user)
+            await db.commit()
+
+    elif event['type'] == 'customer.subscription.deleted':
+        subscription = event['data']['object']
+        customer_id = getattr(subscription, 'customer', None)
+
+        result = await db.execute(
+            select(User).where(User.stripe_customer_id == customer_id)
+        )
+        user = result.scalar_one_or_none()
+        if user:
+            user.subscription_plan = "free"
+            user.subscription_status = "inactive"
+            db.add(user)
+            await db.commit()
+
+    return {"status": "success"}
