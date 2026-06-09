@@ -1,18 +1,24 @@
+import os
+
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
-from app.core.config import settings
 
-database_url = settings.DATABASE_URL
+database_url = os.getenv("DATABASE_URL")
 
 if not database_url:
     raise ValueError("DATABASE_URL environment variable is not set!")
 
+# Supabase requires asyncpg + SSL
 if database_url.startswith("postgresql://"):
     database_url = database_url.replace("postgresql://", "postgresql+asyncpg://", 1)
 elif database_url.startswith("postgres://"):
     database_url = database_url.replace("postgres://", "postgresql+asyncpg://", 1)
 
-engine = create_async_engine(database_url, echo=False)
+engine = create_async_engine(
+    database_url,
+    echo=False,
+    connect_args={"ssl": "require"},
+)
 
 SessionLocal = async_sessionmaker(
     bind=engine,
@@ -26,3 +32,4 @@ class Base(DeclarativeBase):
 async def get_db():
     async with SessionLocal() as session:
         yield session
+

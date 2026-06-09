@@ -93,6 +93,8 @@ async def global_exception_handler(request: Request, exc: Exception):
 async def startup():
     """Create database tables on startup."""
     try:
+        print(f"DB URL: {engine.url}")
+
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all, checkfirst=True)
             await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_customer_id VARCHAR(255);"))
@@ -102,11 +104,15 @@ async def startup():
         print("Database tables created/updated successfully!")
 
         # Initialize job scraping service
-        from app.services.job_scraper import job_service
-        await job_service.initialize()
-        print("Job scraping service initialized successfully!")
+        try:
+            from app.services.job_scraper import job_service
+            await job_service.initialize()
+            print("Job scraping service initialized successfully!")
+        except Exception as e:
+            print(f"Job service initialization error: {e}")
     except Exception as e:
         print(f"Error during startup: {e}")
+
 
 app.include_router(auth.router)
 app.include_router(resumes.router, prefix="/api")

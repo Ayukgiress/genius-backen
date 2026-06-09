@@ -1,17 +1,21 @@
-# Mediapipe Update TODO
+## TODO - Supabase PostgreSQL connection fixes
 
-**Completed:**
-- [x] Update requirements.txt: mediapipe==0.10.14 -> mediapipe==0.10.30
-- [x] Created TODO.md tracking
+- [x] Update `app/db/session.py`
+  - [x] Read `DATABASE_URL` via `os.getenv("DATABASE_URL")`
+  - [x] Normalize `postgres://` / `postgresql://` -> `postgresql+asyncpg://`
+  - [x] Use `create_async_engine` from `sqlalchemy.ext.asyncio`
+  - [x] Add `connect_args={"ssl": "require"}`
+  - [x] Keep `AsyncSession`, `sessionmaker`, and `Base` declaration intact
+  - [x] Ensure `get_db` yields an `AsyncSession`
 
-**Completed:**
-- [x] Local deps verify (externally-managed env; deps will install on deploy)
-- [x] requirements.txt fixed for mediapipe
+- [x] Update `app/main.py` startup
+  - [x] Wrap entire `startup()` in try/except
+  - [x] Add `print(f"DB URL: {engine.url}")` at start of startup
+  - [x] Keep `Base.metadata.create_all` and ALTER TABLE statements
+  - [x] Wrap `job_service.initialize()` in its own try/except
 
-**Next steps for deploy success:**
-- [ ] git add . && git commit -m "fix: update mediapipe to 0.10.30 for deploy" && git push
-- [ ] Redeploy on Render/Railway/etc.
-- [ ] Test MediaPipe interview features
 
-**New issue noted (separate from mediapipe):**
-CORS/502 on /auth/token - check server logs, CORS config (app/routers/auth.py, app/core/config.py?)
+- [ ] Verify deployment startup logs on Render
+  - [ ] Confirm no `[Errno -2] Name or service not known` during startup
+  - [ ] Confirm DB connects successfully on first request
+
