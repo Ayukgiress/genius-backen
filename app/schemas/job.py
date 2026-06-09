@@ -33,7 +33,7 @@ class JobUpdate(BaseModel):
 class JobResponse(JobBase):
     id: str
     created_at: datetime
-    
+
     class Config:
         from_attributes = True
 
@@ -41,6 +41,7 @@ class JobMatchResponse(JobResponse):
     match_score: Optional[int] = None
     matched_skills: Optional[List[str]] = []
     missing_skills: Optional[List[str]] = []
+    match_reason: Optional[str] = None
 
 class JobSearchParams(BaseModel):
     query: Optional[str] = None
