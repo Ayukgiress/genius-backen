@@ -1,6 +1,5 @@
 FROM python:3.11-slim
 
-# Install espeak-ng as root
 RUN apt-get update && apt-get install -y espeak-ng && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
