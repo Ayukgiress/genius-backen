@@ -166,31 +166,57 @@ def _send_via_sendgrid(email: str, subject: str, html_content: str, text_content
 def _send_via_brevo(email: str, subject: str, html_content: str, text_content: str) -> bool:
     """Send email via Brevo API."""
     try:
-        with httpx.Client() as client:
-            response = client.post(
-                "https://api.brevo.com/v3/smtp/email",
-                headers={
-                    "api-key": settings.BREVO_API_KEY,
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "sender": {"email": settings.SMTP_FROM_EMAIL, "name": settings.SMTP_FROM_NAME},
-                    "to": [{"email": email}],
-                    "subject": subject,
-                    "htmlContent": html_content,
-                    "textContent": text_content
-                },
-                timeout=10
-            )
-            if response.status_code == 201:
-                print(f"Email sent successfully to {email} via Brevo")
-                return True
-            else:
+        if not settings.BREVO_API_KEY:
+            print("Brevo API key missing (BREVO_API_KEY not set)")
+            return False
+
+        # Be more explicit with timeouts for Render; avoid total request timeout hanging.
+        timeout = httpx.Timeout(connect=5.0, read=15.0, write=10.0, pool=5.0)
+
+        payload = {
+            "sender": {"email": settings.SMTP_FROM_EMAIL, "name": settings.SMTP_FROM_NAME},
+            "to": [{"email": email}],
+            "subject": subject,
+            "htmlContent": html_content,
+            "textContent": text_content,
+        }
+
+        # Simple retry for transient network timeouts
+        last_exc: Exception | None = None
+        for attempt in (1, 2):
+            try:
+                with httpx.Client(timeout=timeout) as client:
+                    response = client.post(
+                        "https://api.brevo.com/v3/smtp/email",
+                        headers={
+                            "api-key": settings.BREVO_API_KEY,
+                            "Content-Type": "application/json",
+                        },
+                        json=payload,
+                    )
+
+                if response.status_code in (200, 201, 202):
+                    print(f"Email sent successfully to {email} via Brevo (status={response.status_code})")
+                    return True
+
                 print(f"Brevo API error: {response.status_code} - {response.text}")
                 return False
+            except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.PoolTimeout) as e:
+                last_exc = e
+                if attempt == 1:
+                    # Small backoff then retry
+                    import time
+                    time.sleep(0.8)
+                    continue
+                break
+
+        print(f"Error in Brevo email send: {last_exc}")
+        return False
+
     except Exception as e:
         print(f"Error in Brevo email send: {e}")
         return False
+
 
 
 async def send_verification_email(email: str, token: str) -> bool:
