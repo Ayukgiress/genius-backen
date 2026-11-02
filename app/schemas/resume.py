@@ -1,19 +1,23 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from datetime import datetime
 from typing import Optional
 
 class ResumeBase(BaseModel):
-    file_name: str
-    file_path: str
-    content: Optional[str] = None
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    file_name: str = Field(min_length=1, max_length=255)
+    file_path: str = Field(min_length=1, max_length=2_048)
+    content: Optional[str] = Field(default=None, max_length=1_000_000)
 
 class ResumeCreate(ResumeBase):
-    user_id: int
+    user_id: int = Field(gt=0)
 
 class ResumeUpdate(BaseModel):
-    file_name: Optional[str] = None
-    file_path: Optional[str] = None
-    content: Optional[str] = None
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    file_name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    file_path: Optional[str] = Field(default=None, min_length=1, max_length=2_048)
+    content: Optional[str] = Field(default=None, max_length=1_000_000)
 
 class Resume(ResumeBase):
     id: int

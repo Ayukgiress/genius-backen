@@ -1,3 +1,4 @@
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from typing import Optional, List
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,20 +12,22 @@ from app.crud import interview as crud_interview
 from app.crud.user_usage import get_current_month_usage, increment_usage
 from app.routers.deps import get_db, get_current_user
 from app.models.user import User
-from app.schemas.interview import InterviewCreate, InterviewStartRequest
+from app.schemas.interview import InterviewCreate, InterviewStartRequest, InterviewSessionState
+from app.services.analytics import track_interview_event
 from datetime import datetime
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/search")
 async def search_jobs(
-    query: Optional[str] = None,
-    location: Optional[str] = None,
+    query: Optional[str] = Query(default=None, max_length=200),
+    location: Optional[str] = Query(default=None, max_length=200),
     remote: bool = False,
-    job_type: Optional[str] = None,
-    page: int = 1,
-    limit: int = 10,
+    job_type: Optional[str] = Query(default=None, max_length=80),
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=10, ge=1, le=100),
     use_live_data: bool = True,
 ):
     """Search for jobs with filters."""
@@ -191,21 +194,52 @@ async def start_job_interview(
     current_user: User = Depends(get_current_user),
 ):
     """Start an AI interview for a specific job."""
-    # Get resume content if provided
-    resume_content = None
-    if request.resume_id:
-        from app.crud.resume import get_resume as crud_get_resume
-        resume = await crud_get_resume(db, request.resume_id)
-        if resume and resume.user_id == current_user.id:
-            resume_content = resume.content
-
+    db_interview = None
     try:
-        # Start the interview with AI service
-        interview_data = await interview_service.start_interview(job_id, resume_content)
-
-        # Create interview record in database
+        # Persist the session before generation so startup failures are visible
+        # as failed sessions rather than disappearing from interview history.
         interview_create = InterviewCreate(job_id=job_id)
-        db_interview = await crud_interview.create_interview(db, interview_create, current_user.id)
+        db_interview, session_created = await crud_interview.get_or_create_interview(
+            db, interview_create, current_user.id
+        )
+        logger.info(
+            "Job interview session resolved: user_id=%s job_id=%s interview_id=%s created=%s",
+            current_user.id,
+            job_id,
+            db_interview.id,
+            session_created,
+        )
+        if not session_created:
+            db_interview.messages = await crud_interview.get_interview_messages(db, db_interview.id)
+            db_interview.__dict__["session_created"] = False
+            return {
+                "interview": db_interview,
+                "session_state": db_interview.session_state,
+                "session_created": False,
+                "job_info": {"title": job_id, "company": None},
+            }
+
+        resume_content = None
+        if request.resume_id:
+            from app.crud.resume import get_resume as crud_get_resume
+            resume = await crud_get_resume(db, request.resume_id)
+            if resume and resume.user_id == current_user.id:
+                resume_content = resume.content
+
+        await track_interview_event(
+            db,
+            user_id=current_user.id,
+            event_type="interview_started",
+            interview_id=db_interview.id,
+            job_id=job_id,
+            payload={"session_state": InterviewSessionState.STARTED.value, "source": "jobs.start_interview"},
+        )
+        await crud_interview.update_interview_status(
+            db, db_interview.id, InterviewSessionState.ACTIVE
+        )
+
+        logger.info("Generating initial interview prompt: interview_id=%s job_id=%s", db_interview.id, job_id)
+        interview_data = await interview_service.start_interview(job_id, resume_content)
 
         # Save initial AI message
         from app.schemas.interview import InterviewMessageCreate
@@ -213,14 +247,46 @@ async def start_job_interview(
             role="assistant",
             content=interview_data["initial_message"]
         )
-        await crud_interview.create_interview_message(db, db_interview.id, initial_message)
+        saved_initial_message = await crud_interview.create_interview_message(
+            db,
+            db_interview.id,
+            initial_message,
+            audio_data=interview_data.get("ai_audio_data") or interview_data.get("initial_audio_base64"),
+            ai_avatar_video_url=interview_data.get("ai_avatar_video_url"),
+            video_url=interview_data.get("video_url"),
+            avatar_type=interview_data.get("avatar_type"),
+            avatar_style=interview_data.get("avatar_style"),
+            avatar_id=interview_data.get("avatar_id"),
+            response_mode=interview_data.get("response_mode"),
+            speaking_state=interview_data.get("speaking_state"),
+            persona=interview_data.get("persona"),
+            video_status=interview_data.get("video_status"),
+            playback_metadata=interview_data.get("playback_metadata"),
+        )
+        await track_interview_event(
+            db,
+            user_id=current_user.id,
+            event_type="question_generated",
+            interview_id=db_interview.id,
+            job_id=job_id,
+            payload={"source": "interview_initial_prompt", "message_id": saved_initial_message.id},
+        )
+        final_state = (
+            InterviewSessionState.AI_SPEAKING
+            if interview_data.get("ai_audio_data") or interview_data.get("initial_audio_base64") or interview_data.get("ai_avatar_video_url")
+            else InterviewSessionState.WAITING_FOR_USER
+        )
+        await crud_interview.update_interview_status(db, db_interview.id, final_state)
 
         # Get the complete interview with messages
         interview = await crud_interview.get_interview(db, db_interview.id)
         interview.messages = await crud_interview.get_interview_messages(db, db_interview.id)
+        interview.__dict__["session_created"] = True
 
         return {
             "interview": interview,
+            "session_state": final_state.value,
+            "session_created": True,
             "job_info": {
                 "title": interview_data["job_title"],
                 "company": interview_data["company"]
@@ -228,6 +294,27 @@ async def start_job_interview(
         }
 
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.warning(
+            "Interview prompt could not be generated: user_id=%s job_id=%s interview_id=%s reason=%s",
+            current_user.id,
+            job_id,
+            getattr(db_interview, "id", None),
+            str(e),
+        )
+        if db_interview is not None:
+            await crud_interview.update_interview_status(
+                db, db_interview.id, InterviewSessionState.FAILED
+            )
+        raise HTTPException(status_code=400, detail="Unable to generate an interview prompt for this job.") from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to start interview: {str(e)}")
+        logger.exception(
+            "Job interview startup failed: user_id=%s job_id=%s interview_id=%s",
+            current_user.id,
+            job_id,
+            getattr(db_interview, "id", None),
+        )
+        if db_interview is not None:
+            await crud_interview.update_interview_status(
+                db, db_interview.id, InterviewSessionState.FAILED
+            )
+        raise HTTPException(status_code=500, detail="Failed to start interview.") from e

@@ -1,6 +1,8 @@
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict
+import json
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from datetime import datetime
 from typing import Optional, Any
 
@@ -14,22 +16,38 @@ class FocusArea(str, Enum):
 
 
 class AnalysisBase(BaseModel):
-    resume_id: int
-    status: str = "pending"
+    resume_id: int = Field(gt=0)
+    status: str = Field(default="pending", min_length=1, max_length=50)
     result: Optional[dict[str, Any]] = None
     feedback: Optional[str] = None
+
+    @field_validator("result")
+    @classmethod
+    def validate_result_size(cls, result: Optional[dict[str, Any]]):
+        if result is not None and len(json.dumps(result, default=str)) > 1_000_000:
+            raise ValueError("Analysis result must not exceed 1 MB")
+        return result
 
 class AnalysisCreate(AnalysisBase):
     pass
 
 class AnalysisUpdate(BaseModel):
-    status: Optional[str] = None
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    status: Optional[str] = Field(default=None, min_length=1, max_length=50)
     result: Optional[dict[str, Any]] = None
     feedback: Optional[str] = None
 
+    @field_validator("result")
+    @classmethod
+    def validate_result_size(cls, result: Optional[dict[str, Any]]):
+        if result is not None and len(json.dumps(result, default=str)) > 1_000_000:
+            raise ValueError("Analysis result must not exceed 1 MB")
+        return result
+
 class AnalysisAIGenerate(BaseModel):
     """Schema for triggering AI analysis"""
-    resume_id: int
+    resume_id: int = Field(gt=0)
 
 class Analysis(AnalysisBase):
     id: int

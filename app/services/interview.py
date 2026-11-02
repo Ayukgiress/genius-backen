@@ -24,6 +24,23 @@ from app.services.job_scraper import job_service
 
 logger = logging.getLogger(__name__)
 
+
+class AudioPayloadError(ValueError):
+    """An audio input failure safe to return to the client."""
+
+    def __init__(self, category: str, message: str):
+        super().__init__(message)
+        self.category = category
+
+
+class VideoPayloadError(ValueError):
+    """A video frame input failure safe to return to the client."""
+
+    def __init__(self, category: str, message: str):
+        super().__init__(message)
+        self.category = category
+
+
 class InterviewService:
     "Service for managing AI-powered job interviews using Groq. Now supports video frame analysis."
 
@@ -83,14 +100,8 @@ class InterviewService:
             )
             return translation if translation else ""
         except Exception as e:
-            # Handle common Whisper errors that should not crash the interview
-            error_msg = str(e).lower()
-            if "could not process file" in error_msg or "invalid_request_error" in error_msg:
-                logger.warning(f"Whisper rejected audio: {e}")
-                return ""
-            
-            logger.error(f'STT error: {e}')
-            raise e
+            logger.exception("Speech recognition provider failed [transcription]")
+            raise
 
     async def generate_speech(self, text: str) -> bytes:
         "Generate speech using ElevenLabs, OpenAI, or pyttsx3 as fallback"
@@ -223,90 +234,288 @@ class InterviewService:
             logger.error(f"Text-to-speech conversion error: {e}")
             return None
 
-    async def process_audio_chunk(self, base64_audio: str, job_id: str, conversation_history: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
-        "Process audio chunk: decode base64 WebM/Opus -> STT -> AI response -> TTS (optional) -> encode back to base64 WebM/Opus"
-        if not self.groq_client:
-            return {'error': 'Groq client not configured', 'status': 'error'}
+    @staticmethod
+    def package_response(
+        *,
+        content: Optional[str] = None,
+        transcript: Optional[str] = None,
+        ai_audio_data: Optional[str] = None,
+        visual_data: Optional[Dict[str, Any]] = None,
+        status: str = "success",
+        error: Optional[str] = None,
+        **metadata: Any,
+    ) -> Dict[str, Any]:
+        """Return the canonical media response and transitional legacy aliases."""
+        result = {
+            "content": content,
+            "transcript": transcript,
+            "ai_audio_data": ai_audio_data,
+            "audio_data": ai_audio_data,
+            "visual_data": visual_data,
+            "status": status,
+            "response_status": status,
+            "error": error,
+            "response_mode": None,
+            "ai_avatar_video_url": None,
+            "avatar_type": None,
+            "avatar_style": None,
+            "persona": None,
+            "video_status": None,
+            "playback_metadata": None,
+            # Compatibility aliases for existing clients.
+            "ai_text": content,
+            "ai_audio_base64": ai_audio_data,
+        }
+        result.update(metadata)
+        return result
+
+    def _prepare_audio_for_transcription(self, base64_audio: str) -> io.BytesIO:
+        """Validate and convert supported base64 audio into canonical mono 16 kHz WAV."""
+        if not isinstance(base64_audio, str) or not base64_audio.strip():
+            logger.warning("Audio input rejected [format]: empty payload")
+            raise AudioPayloadError("format", "Audio payload is empty.")
+
+        encoded_audio = base64_audio.strip()
+        declared_type = None
+        if encoded_audio.startswith("data:"):
+            header, separator, encoded_audio = encoded_audio.partition(",")
+            if not separator or ";base64" not in header.lower():
+                logger.warning("Audio input rejected [decode]: invalid data URL")
+                raise AudioPayloadError("decode", "Audio data URL must contain valid base64 data.")
+            declared_type = header[5:].split(";", 1)[0].lower()
+            supported_types = {
+                "audio/webm": "webm",
+                "audio/wav": "wav",
+                "audio/x-wav": "wav",
+                "audio/mpeg": "mp3",
+                "audio/mp3": "mp3",
+            }
+            if declared_type not in supported_types:
+                logger.warning("Audio input rejected [format]: unsupported MIME type %s", declared_type)
+                raise AudioPayloadError("format", "Unsupported audio format. Use WebM, WAV, or MP3.")
+            declared_format = supported_types[declared_type]
+        else:
+            declared_format = None
+
+        # Permit ordinary whitespace in chunked base64, but reject every other
+        # non-alphabet character by decoding with validate=True.
+        encoded_audio = "".join(encoded_audio.split())
+        if not encoded_audio:
+            logger.warning("Audio input rejected [format]: empty base64 data")
+            raise AudioPayloadError("format", "Audio payload is empty.")
+        if len(encoded_audio) > 4 * ((25 * 1024 * 1024 + 2) // 3):
+            logger.warning("Audio input rejected [decode]: payload exceeds 25 MiB limit")
+            raise AudioPayloadError("decode", "Audio payload exceeds the 25 MiB limit.")
+        try:
+            audio_data = base64.b64decode(encoded_audio, validate=True)
+        except (ValueError, TypeError) as decode_error:
+            logger.warning("Audio input rejected [decode]: malformed base64 (%s)", decode_error)
+            raise AudioPayloadError("decode", "Audio payload is not valid base64.") from decode_error
+        if not audio_data:
+            logger.warning("Audio input rejected [format]: decoded payload is empty")
+            raise AudioPayloadError("format", "Audio payload is empty.")
+        if len(audio_data) > 25 * 1024 * 1024:
+            logger.warning("Audio input rejected [decode]: decoded payload exceeds 25 MiB limit")
+            raise AudioPayloadError("decode", "Audio payload exceeds the 25 MiB limit.")
+
+        if audio_data.startswith(b"\x1a\x45\xdf\xa3"):
+            detected_format = "webm"
+        elif len(audio_data) >= 12 and audio_data[:4] == b"RIFF" and audio_data[8:12] == b"WAVE":
+            detected_format = "wav"
+        elif audio_data.startswith(b"ID3") or (
+            len(audio_data) >= 2 and audio_data[0] == 0xFF and (audio_data[1] & 0xE0) == 0xE0
+        ):
+            detected_format = "mp3"
+        else:
+            logger.warning("Audio input rejected [format]: unrecognized audio container")
+            raise AudioPayloadError("format", "Audio format could not be identified. Use WebM, WAV, or MP3.")
+
+        if declared_format and declared_format != detected_format:
+            logger.warning(
+                "Audio input rejected [format]: MIME type %s does not match %s data",
+                declared_type,
+                detected_format,
+            )
+            raise AudioPayloadError("format", "Declared audio format does not match the payload.")
+        if AudioSegment is None:
+            logger.error("Audio normalization unavailable [format]: pydub is not installed")
+            raise AudioPayloadError("format", "Audio processing is temporarily unavailable.")
 
         try:
-            # Decode base64 WebM/Opus audio
-            if not base64_audio or base64_audio.strip() == "":
-                logger.warning("Empty base64 audio data received")
-                return {'error': 'Empty base64 audio data', 'status': 'error'}
+            segment = AudioSegment.from_file(io.BytesIO(audio_data), format=detected_format)
+        except Exception as conversion_error:
+            logger.warning("Audio normalization failed [format] for %s: %s", detected_format, conversion_error)
+            raise AudioPayloadError("format", "Audio file is malformed or cannot be decoded.") from conversion_error
 
-            logger.info(f"Processing audio chunk, base64 length: {len(base64_audio)}")
-            audio_data = base64.b64decode(base64_audio)
-            logger.info(f"Decoded audio data size: {len(audio_data)} bytes")
-            
-            if not audio_data or len(audio_data) == 0:
-                logger.warning("Decoded audio data is empty")
-                return {'error': 'Decoded audio data is empty', 'status': 'error'}
+        # Very short and effectively silent chunks are normal microphone/VAD
+        # outcomes, not provider failures. Check before any gain normalization.
+        if len(segment) < 250 or segment.dBFS == float("-inf") or segment.dBFS <= -55:
+            logger.info(
+                "Audio classified as no_speech: duration_ms=%s level_dbfs=%s",
+                len(segment),
+                segment.dBFS,
+            )
+            empty_wav = io.BytesIO()
+            empty_wav.name = "audio.wav"
+            empty_wav.no_speech = True
+            return empty_wav
 
-            # Convert WebM to WAV for better Whisper compatibility
-            if AudioSegment is not None:
-                try:
-                    logger.info("Converting WebM audio to WAV for transcription...")
-                    # Validate WebM data before conversion
-                    webm_buffer = io.BytesIO(audio_data)
-                    webm_segment = AudioSegment.from_file(webm_buffer, format="webm")
-                    wav_buffer = io.BytesIO()
-                    webm_segment.export(wav_buffer, format="wav")
-                    wav_buffer.seek(0)
-                    wav_buffer.name = "audio.wav"
-                    audio_buffer = wav_buffer
-                    logger.info("Audio conversion successful")
-                except Exception as conv_error:
-                    logger.warning(f'Audio conversion failed (possibly invalid WebM data): {conv_error}, using WebM directly')
-                    audio_buffer = io.BytesIO(audio_data)
-                    audio_buffer.name = "audio.webm"
-            else:
-                logger.warning('Audio processing libraries not available, using WebM directly')
-                audio_buffer = io.BytesIO(audio_data)
-                audio_buffer.name = "audio.webm"
+        normalized = segment.set_channels(1).set_frame_rate(16000).set_sample_width(2)
+        wav_buffer = io.BytesIO()
+        try:
+            normalized.export(wav_buffer, format="wav")
+        except Exception as conversion_error:
+            logger.exception("Audio normalization failed [format] while exporting WAV")
+            raise AudioPayloadError("format", "Audio could not be normalized for transcription.") from conversion_error
+        wav_buffer.seek(0)
+        wav_buffer.name = "audio.wav"
+        wav_buffer.no_speech = False
+        logger.info(
+            "Audio normalized: source_format=%s duration_ms=%s channels=1 sample_rate=16000",
+            detected_format,
+            len(normalized),
+        )
+        return wav_buffer
 
-            # Transcribe audio using Groq Whisper
-            logger.info("Sending to Groq Whisper for transcription...")
+    @staticmethod
+    def _decode_video_frame_payload(base64_data: str) -> bytes:
+        """Strictly decode a bounded image payload or raise a safe input error."""
+        if not isinstance(base64_data, str) or not base64_data.strip():
+            raise VideoPayloadError("format", "Video frame payload is empty.")
+        encoded_image = base64_data.strip()
+        if encoded_image.startswith("data:"):
+            header, separator, encoded_image = encoded_image.partition(",")
+            if (
+                not separator
+                or ";base64" not in header.lower()
+                or header[5:].split(";", 1)[0].lower()
+                not in {"image/jpeg", "image/png", "image/webp"}
+            ):
+                raise VideoPayloadError("format", "Video frame data URL is invalid.")
+        encoded_image = "".join(encoded_image.split())
+        if not encoded_image or len(encoded_image) > 8_000_000:
+            raise VideoPayloadError("format", "Video frame exceeds the supported size limit.")
+        try:
+            image_data = base64.b64decode(encoded_image, validate=True)
+        except (ValueError, TypeError) as error:
+            raise VideoPayloadError("decode", "Video frame is not valid base64.") from error
+        if not image_data or len(image_data) > 6 * 1024 * 1024:
+            raise VideoPayloadError("format", "Video frame exceeds the supported size limit.")
+        return image_data
+
+    async def handle_audio_turn(
+        self,
+        base64_audio: str,
+        job_id: str,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+    ) -> Dict[str, Any]:
+        """Orchestrate one audio turn for HTTP and WebSocket callers alike."""
+        if not self.groq_client:
+            return self.package_response(status="error", error="Groq client not configured")
+
+        try:
+            logger.info(
+                "Processing interview audio: job_id=%s encoded_length=%s",
+                job_id,
+                len(base64_audio) if isinstance(base64_audio, str) else 0,
+            )
+            audio_buffer = self._prepare_audio_for_transcription(base64_audio)
+        except AudioPayloadError as error:
+            logger.warning("Interview audio rejected: job_id=%s category=%s", job_id, error.category)
+            return self.package_response(status="error", error=str(error), error_type=error.category)
+
+        if getattr(audio_buffer, "no_speech", False):
+            return self.package_response(status="no_speech", transcript="")
+        if not self.groq_client:
+            return self.package_response(status="error", error="Speech recognition is not configured.", error_type="transcription")
+
+        try:
+            logger.info("Transcribing normalized audio [transcription]")
             transcript = await self.transcribe_audio(audio_buffer)
-            logger.info(f"✅ Transcription result: '{transcript}'")
+        except Exception as error:
+            logger.exception("Audio transcription failed: job_id=%s", job_id)
+            return self.package_response(
+                status="error",
+                error="Audio transcription failed. Please try recording again.",
+                error_type="transcription",
+            )
+        logger.info("Transcription complete: characters=%s", len(transcript or ""))
+        if not transcript or not transcript.strip():
+            logger.info("Transcription classified as no_speech")
+            return self.package_response(status="no_speech", transcript="")
 
-            if not transcript or transcript.strip() == "":
-                logger.warning("No speech detected in audio chunk (empty transcript)")
-                return {
-                    'transcript': '',
-                    'ai_text': None,
-                    'ai_audio_base64': None,
-                    'status': 'no_speech'
-                }
+        try:
+            logger.info("Generating interview response: job_id=%s", job_id)
+            response_history = list(conversation_history or [])
+            response_history.append({"role": "user", "content": transcript})
+            ai_response = await self.continue_interview(response_history, job_id)
+            if not ai_response or not ai_response.strip():
+                logger.warning("AI generation returned empty content [ai_generation]; using fallback")
+                ai_response = "I see. Could you please tell me more about that, or should we move on to the next question?"
+        except Exception:
+            logger.exception("Interview response generation failed: job_id=%s", job_id)
+            return self.package_response(
+                status="error",
+                error="Could not generate an interview response. Please try again.",
+                error_type="ai_generation",
+            )
 
-            # Generate AI response
-            logger.info("Generating AI response based on transcript...")
-            ai_response = await self.continue_interview(conversation_history or [], job_id)
-            logger.info(f"✅ AI Response generated: '{ai_response[:100]}...'")
+        # Speech is optional: TTS provider failures degrade to text-only.
+        ai_audio_base64 = await self.text_to_speech_base64(ai_response)
+        return self.package_response(
+            content=ai_response,
+            transcript=transcript,
+            ai_audio_data=ai_audio_base64,
+            status="success",
+            response_mode="text_audio" if ai_audio_base64 else "text",
+            ai_avatar_video_url=None,
+            avatar_type=None,
+            avatar_style=None,
+            persona=None,
+            video_status=None,
+            playback_metadata=None,
+        )
 
-            if not ai_response or ai_response.strip() == "":
-                 logger.warning("AI generated an empty response")
-                 # Fallback response to keep interview moving
-                 ai_response = "I see. Could you please tell me more about that, or should we move on to the next question?"
-                 logger.info(f"Using fallback AI response: '{ai_response}'")
+    async def process_audio_chunk(
+        self,
+        base64_audio: str,
+        job_id: str,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+    ) -> Dict[str, Any]:
+        """Backward-compatible alias for the shared audio turn handler."""
+        return await self.handle_audio_turn(base64_audio, job_id, conversation_history)
 
-            # Generate speech from AI response
-            logger.info("Converting AI response to speech...")
-            ai_audio_base64 = await self.text_to_speech_base64(ai_response)
-            if ai_audio_base64:
-                logger.info(f"AI speech generated: {len(ai_audio_base64)} base64 chars")
-            else:
-                logger.warning("AI speech generation failed (using text-only)")
-
-            return {
-                'transcript': transcript,
-                'ai_text': ai_response,
-                'ai_audio_base64': ai_audio_base64,
-                'status': 'success'
-            }
-
-        except Exception as e:
-            logger.error(f'Audio processing error: {e}')
-            return {'error': str(e), 'status': 'error'}
+    async def generate_text_turn(
+        self,
+        conversation_history: List[Dict[str, str]],
+        job_id: str,
+        *,
+        generate_audio: bool = False,
+    ) -> Dict[str, Any]:
+        """Generate and package a text turn, optionally synthesizing speech."""
+        try:
+            logger.info("Generating text interview response: job_id=%s history_messages=%s", job_id, len(conversation_history))
+            content = await self.continue_interview(conversation_history, job_id)
+            if not content or not content.strip():
+                raise ValueError("AI generated an empty response")
+            audio_data = (
+                await self.text_to_speech_base64(content)
+                if generate_audio
+                else None
+            )
+            return self.package_response(
+                content=content,
+                ai_audio_data=audio_data,
+                status="success",
+                response_mode="text_audio" if audio_data else "text",
+            )
+        except Exception as error:
+            logger.exception("Text interview turn failed: job_id=%s", job_id)
+            return self.package_response(
+                status="error",
+                error="Could not generate an interview response. Please try again.",
+                error_type="ai_generation",
+            )
 
     @functools.lru_cache(maxsize=1)
     def _get_face_detection(self):
@@ -331,23 +540,43 @@ class InterviewService:
     async def process_video_frame(self, base64_data: str, timestamp: int, job_id: str, conversation_history: Optional[List[Dict[str, str]]] = None, generate_ai: bool = True) -> Dict[str, Any]:
         "Process video chunk: MediaPipe face/posture -> visual analysis -> LLM next question."
         if not self.groq_client:
-            return {'error': 'Groq client not configured', 'status': 'error'}
+            return self.package_response(status="error", error="Groq client not configured")
         
         if cv2 is None or np is None:
-            return {'error': 'OpenCV or NumPy not installed', 'status': 'error'}
+            return self.package_response(status="error", error="OpenCV or NumPy not installed")
 
-        # Decode base64 webp
+        # Decode only bounded image payloads; do not silently ignore malformed
+        # characters or accept arbitrary data URLs from the WebSocket client.
         try:
-            if ',' in base64_data:
-                base64_data = base64_data.split(',')[1]
-            image_data = base64.b64decode(base64_data)
+            image_data = self._decode_video_frame_payload(base64_data)
             nparr = np.frombuffer(image_data, np.uint8)
             frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             if frame is None:
-                return {'error': 'Failed to decode frame', 'status': 'error'}
-        except Exception as e:
-            logger.error(f'Frame decode error: {e}')
-            return {'error': str(e), 'status': 'error'}
+                return self.package_response(
+                    status="error",
+                    error="Video frame could not be decoded.",
+                    error_type="decode",
+                )
+            if frame.shape[0] * frame.shape[1] > 16_000_000:
+                return self.package_response(
+                    status="error",
+                    error="Video frame dimensions exceed the supported limit.",
+                    error_type="format",
+                )
+        except VideoPayloadError as error:
+            logger.info("Video frame rejected: %s", error)
+            return self.package_response(
+                status="error",
+                error=str(error),
+                error_type=error.category,
+            )
+        except Exception:
+            logger.exception("Video frame decoding failed")
+            return self.package_response(
+                status="error",
+                error="Video frame could not be decoded.",
+                error_type="decode",
+            )
 
         rgb_frame = None
         try:
@@ -403,18 +632,29 @@ class InterviewService:
                 )
                 ai_text = response.choices[0].message.content.strip()
 
-            result = {
-                'transcript': visual_stt,
-                'ai_text': ai_text,
-                'status': 'responding' if ai_text else 'analyzing',
-                'timestamp': timestamp,
-                'visual': {
-                    'face': face_desc,
-                    'posture': posture_desc
-                }
-            }
-            return result
+            visual_data = {"face": face_desc, "posture": posture_desc}
+            response_status = "responding" if ai_text else "analyzing"
+            return self.package_response(
+                content=ai_text,
+                transcript=visual_stt,
+                visual_data=visual_data,
+                status=response_status,
+                response_mode="text" if ai_text else "visual_analysis",
+                ai_audio_data=None,
+                ai_avatar_video_url=None,
+                avatar_type=None,
+                avatar_style=None,
+                persona=None,
+                video_status=None,
+                playback_metadata=None,
+                timestamp=timestamp,
+                # Legacy key retained for existing video clients.
+                visual=visual_data,
+            )
 
+        except Exception as error:
+            logger.exception("Video/person analysis failed")
+            return self.package_response(status="error", error=str(error))
         finally:
             # Privacy: delete frame data
             if 'frame' in locals():
@@ -423,6 +663,23 @@ class InterviewService:
                 del nparr
             if rgb_frame is not None:
                 del rgb_frame
+
+    async def analyze_video_person(
+        self,
+        base64_data: str,
+        timestamp: int,
+        job_id: str,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        generate_ai: bool = True,
+    ) -> Dict[str, Any]:
+        """Domain-named entry point for video/person analysis orchestration."""
+        return await self.process_video_frame(
+            base64_data,
+            timestamp,
+            job_id,
+            conversation_history,
+            generate_ai,
+        )
 
     async def start_interview(self, job_id: str, resume_content: Optional[str] = None) -> Dict[str, Any]:
         "Start a new AI interview for a specific job."
@@ -457,12 +714,26 @@ class InterviewService:
         # Generate audio for initial message
         initial_audio_base64 = await self.text_to_speech_base64(initial_message)
 
-        return {
+        packaged = self.package_response(
+            content=initial_message,
+            transcript=None,
+            ai_audio_data=initial_audio_base64,
+            status="success",
+            response_mode="text_audio" if initial_audio_base64 else "text",
+            ai_avatar_video_url=None,
+            avatar_type=None,
+            avatar_style=None,
+            persona=None,
+            video_status=None,
+            playback_metadata=None,
+        )
+        packaged.update({
             'initial_message': initial_message,
             'initial_audio_base64': initial_audio_base64,
             'job_title': job_dict.get('title', 'Unknown Position'),
             'company': job_dict.get('company', 'Unknown Company')
-        }
+        })
+        return packaged
 
     async def continue_interview(self, conversation_history: List[Dict[str, str]], job_id: str, resume_content: Optional[str] = None) -> str:
         "Continue an ongoing interview with the user's response."

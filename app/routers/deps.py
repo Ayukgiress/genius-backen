@@ -5,14 +5,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.db.session import get_db
 from app.crud.user import get_user_by_email
-from app.schemas.user import TokenData
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
 
-async def get_current_user(
-    db: AsyncSession = Depends(get_db),
-    token: str = Depends(oauth2_scheme)
-):
+async def get_user_from_token(db: AsyncSession, token: str):
+    """Resolve a bearer token to a user using the shared HTTP/WS auth rules."""
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -22,14 +19,19 @@ async def get_current_user(
         payload = jwt.decode(
             token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
         )
-        email: str = payload.get("sub")
-        if email is None:
+        email = payload.get("sub")
+        if not email:
             raise credentials_exception
-        token_data = TokenData(email=email)
     except JWTError:
         raise credentials_exception
-    
-    user = await get_user_by_email(db, email=token_data.email)
+
+    user = await get_user_by_email(db, email=email)
     if user is None:
         raise credentials_exception
     return user
+
+async def get_current_user(
+    db: AsyncSession = Depends(get_db),
+    token: str = Depends(oauth2_scheme)
+):
+    return await get_user_from_token(db, token)

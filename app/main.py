@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Request, HTTPException
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from uvloop import install as install_uvloop
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
@@ -62,32 +63,57 @@ app.add_middleware(
 
 app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=["*"])
 
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    logging.error(f"Global error: {exc}", exc_info=True)
-    
-    if isinstance(exc, HTTPException):
-        status_code = exc.status_code
-        detail = exc.detail
-        message = str(exc.detail)
-    else:
-        status_code = 500
-        detail = "Internal Server Error"
-        message = str(exc)
-        
-    response = JSONResponse(
-        status_code=status_code,
-        content={"detail": detail, "message": message},
-    )
-    
-    # Manually add CORS headers to error responses as they sometimes bypass middleware
+def _error_response(request: Request, status_code: int, content: dict) -> JSONResponse:
+    response = JSONResponse(status_code=status_code, content=content)
     origin = request.headers.get("origin")
     if origin:
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Access-Control-Allow-Credentials"] = "true"
         response.headers["Access-Control-Allow-Methods"] = "*"
-        response.headers["Access-Control-Allow-Headers"] = "*"            
+        response.headers["Access-Control-Allow-Headers"] = "*"
     return response
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    response = _error_response(
+        request,
+        exc.status_code,
+        {"detail": exc.detail, "message": str(exc.detail)},
+    )
+    if exc.headers:
+        response.headers.update(exc.headers)
+    return response
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_exception_handler(request: Request, exc: RequestValidationError):
+    logger = logging.getLogger(__name__)
+    logger.info("Request validation failed: method=%s path=%s", request.method, request.url.path)
+    errors = [
+        {"location": error.get("loc", []), "message": error.get("msg", "Invalid value"), "type": error.get("type")}
+        for error in exc.errors()
+    ]
+    return _error_response(
+        request,
+        422,
+        {"detail": "Request validation failed", "message": "Request validation failed", "errors": errors},
+    )
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logging.getLogger(__name__).exception(
+        "Unhandled API error: method=%s path=%s",
+        request.method,
+        request.url.path,
+        exc_info=exc,
+    )
+    return _error_response(
+        request,
+        500,
+        {"detail": "Internal server error", "message": "Internal server error"},
+    )
 
 @app.on_event("startup")
 async def startup():
