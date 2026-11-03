@@ -417,8 +417,6 @@ async def create_new_interview(
     elif session_created and current_user.subscription_plan == "pro":
         await increment_usage(db, current_user.id, "interview")
 
-    if not session_created:
-
     # Get resume content only when this request actually creates a session.
     resume_content = None
     if interview_in.resume_id:
