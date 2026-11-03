@@ -266,7 +266,7 @@ class LLMService:
         **kwargs: Any,
     ) -> str:
         """Run an LLM completion with per-user rate limiting and provider fallback."""
-        if not self.rate_limiter.is_allowed(user_id):
+        if not await self.rate_limiter.is_allowed(user_id):
             raise RateLimitExceeded(
                 f"Rate limit exceeded: max {self.rate_limiter.limit} requests per minute per user"
             )
