@@ -33,9 +33,8 @@ async def create_resume(
     current_user: User = Depends(get_current_user)
 ):
     resume_data = resume_in.model_dump()
-    resume_data["user_id"] = current_user.id
     resume = ResumeCreate(**resume_data)
-    return await create_resume_db(db, resume)
+    return await create_resume_db(db, current_user.id, resume)
 
 
 @router.get("/{resume_id}", response_model=Resume)
@@ -138,10 +137,9 @@ async def upload_resume(
         "file_name": file.filename,
         "file_path": cloudinary_result["url"], 
         "content": content,
-        "user_id": current_user.id
     }
     resume = ResumeCreate(**resume_data)
-    return await create_resume_db(db, resume)
+    return await create_resume_db(db, current_user.id, resume)
 
 
 @router.post("/{resume_id}/tailor")

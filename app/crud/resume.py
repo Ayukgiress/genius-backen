@@ -42,11 +42,12 @@ async def get_resumes_by_user(db: AsyncSession, user_id: int):
     result = await db.execute(select(Resume).where(Resume.user_id == user_id))
     return result.scalars().all()
 
-async def create_resume(db: AsyncSession, resume: ResumeCreate):
+async def create_resume(db: AsyncSession, user_id: int, resume: ResumeCreate):
     data = resume.model_dump()
+    data["user_id"] = user_id
     # Always sanitize the textual content. NUL bytes (and other ASCII control
     # characters) make PostgreSQL reject the INSERT with a UTF-8 encoding
-    # error, which is exactly the bug we are guarding against.
+    # error, which is exactly the bug we are guarding about.
     data["content"] = _sanitize_text(data.get("content"))
     db_resume = Resume(**data)
     db.add(db_resume)

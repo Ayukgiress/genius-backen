@@ -6,11 +6,11 @@ class ResumeBase(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     file_name: str = Field(min_length=1, max_length=255)
-    file_path: str = Field(min_length=1, max_length=2_048)
+    file_path: Optional[str] = Field(default=None, max_length=2_048)
     content: Optional[str] = Field(default=None, max_length=1_000_000)
 
 class ResumeCreate(ResumeBase):
-    user_id: int = Field(gt=0)
+    pass
 
 class ResumeUpdate(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
