@@ -1,4 +1,6 @@
+import asyncio
 import logging
+import time
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status, WebSocket, WebSocketDisconnect, Query, Response
 from fastapi.responses import JSONResponse
@@ -11,17 +13,29 @@ from app.schemas.interview import (
     InterviewResponse, InterviewCreate, InterviewMessageResponse,
     InterviewMessageCreate, InterviewAudioMessageCreate,
     InterviewSessionState, InterviewWebSocketAuth,
-    InterviewWebSocketAudioMessage, InterviewWebSocketVideoFrame,
+    InterviewWebSocketConfig, InterviewWebSocketUserText, InterviewWebSocketEnd,
+    InterviewWebSocketPing, InterviewConfig, TranscriptSegment,
+    InterviewReportResponse, InterviewReportCreate, InterviewTrendsResponse,
 )
 from app.crud.interview import (
     get_interview, list_interviews_by_user, get_interview_status_counts,
     get_interview_messages_for_interviews, get_or_create_interview,
     update_interview_status, delete_interview,
-    create_interview_message, create_interview_turn_messages, get_interview_messages
+    create_interview_message, create_interview_turn_messages, get_interview_messages,
+    update_interview_config, save_question_plan, get_question_plan,
+    update_covered_competencies, get_covered_competencies,
+    append_transcript_segment, get_transcript_segments, set_interview_completed,
+    get_interview_report, upsert_interview_report,
 )
 from app.crud.resume import get_resume
 from app.services.interview import interview_service
+from app.services.job_scraper import job_service
 from app.services.analytics import track_interview_event
+from app.crud.kanban import get_cards_by_board, get_boards_by_user
+
+from app.crud.user_usage import get_current_month_usage, increment_usage, check_usage_limit
+from app.core.config import settings
+import logging
 
 logger = logging.getLogger(__name__)
 
@@ -374,6 +388,15 @@ async def create_new_interview(
         current_user.id,
         interview_in.job_id,
     )
+    # Check usage limits for free users
+    if current_user.subscription_plan == "free":
+        from app.core.config import settings
+        current_usage = await get_current_month_usage(db, current_user.id, "interview")
+        if current_usage >= settings.FREE_INTERVIEWS_PER_DAY:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Free users are limited to {settings.FREE_INTERVIEWS_PER_DAY} interviews per day. Please upgrade to Pro for unlimited access.",
+            )
     try:
         interview, session_created = await get_or_create_interview(
             db, interview_in, user_id=current_user.id
@@ -389,16 +412,12 @@ async def create_new_interview(
             detail="Unable to create interview session.",
         ) from exc
 
+    if session_created and current_user.subscription_plan == "free":
+        await increment_usage(db, current_user.id, "interview")
+    elif session_created and current_user.subscription_plan == "pro":
+        await increment_usage(db, current_user.id, "interview")
+
     if not session_created:
-        logger.info("Reusing interview session: user_id=%s interview_id=%s", current_user.id, interview.id)
-        existing_messages = await get_interview_messages(db, interview.id)
-        interview.__dict__["messages"] = existing_messages
-        interview.__dict__["session_created"] = False
-        interview.__dict__["initial_message_status"] = (
-            "success" if any(message.role == "assistant" for message in existing_messages) else "pending"
-        )
-        response.status_code = status.HTTP_200_OK
-        return interview
 
     # Get resume content only when this request actually creates a session.
     resume_content = None
@@ -617,7 +636,45 @@ async def get_messages(
             detail="Unable to load interview messages.",
         ) from exc
 
-@router.post("/{interview_id}/complete")
+async def _generate_and_store_report(
+    db: AsyncSession,
+    interview: Any,
+    resume_content: Optional[str] = None,
+    kanban_card_id: Optional[int] = None,
+) -> None:
+    try:
+        job = await job_service.match_with_resume(interview.job_id, resume_content or "")
+        job_dict = {
+            "title": getattr(job, "title", "Unknown"),
+            "company": getattr(job, "company", "Unknown"),
+            "description": getattr(job, "description", "") or "",
+            "requirements": getattr(job, "requirements", "") or "",
+        } if job else {"title": "Unknown", "company": "Unknown", "description": "", "requirements": ""}
+        
+        messages = await get_interview_messages(db, interview.id)
+        conversation_history = [{"role": msg.role, "content": msg.content} for msg in messages if msg.role in ["user", "assistant"]]
+        
+        report_data = await interview_service.generate_interview_feedback(job_dict, conversation_history, resume_content)
+        
+        report_create = InterviewReportCreate(
+            interview_id=interview.id,
+            user_id=interview.user_id,
+            job_id=interview.job_id,
+            resume_id=getattr(interview, "resume_id", None),
+            kanban_card_id=kanban_card_id,
+            overall_score=report_data.get("overall_score"),
+            per_question_scores=report_data.get("per_question_scores"),
+            strengths=report_data.get("strengths"),
+            gaps=report_data.get("gaps"),
+            sample_answer=report_data.get("sample_answer"),
+            rubric=report_data.get("rubric"),
+            feedback=report_data.get("feedback"),
+            report_data=report_data,
+        )
+        await upsert_interview_report(db, report_create)
+        logger.info("Generated interview report for interview_id=%s", interview.id)
+    except Exception:
+        logger.exception("Failed to generate interview report for interview_id=%s", interview.id)
 async def complete_interview(
     interview_id: int,
     db: AsyncSession = Depends(get_db),
@@ -638,11 +695,156 @@ async def complete_interview(
             job_id=interview.job_id,
             payload={"session_state": InterviewSessionState.COMPLETED.value},
         )
+        kanban_card_id = None
+        try:
+            boards = await get_boards_by_user(db, current_user.id)
+            for board in boards:
+                cards = await get_cards_by_board(db, board.id)
+                for card in cards:
+                    if interview.job_id in (card.title or "") or (card.description and interview.job_id in card.description):
+                        kanban_card_id = card.id
+                        break
+                if kanban_card_id:
+                    break
+        except Exception:
+            pass
+        resume_content = None
+        resume_id = getattr(interview, "resume_id", None)
+        if resume_id:
+            try:
+                resume = await get_resume(db, resume_id)
+                if resume and resume.user_id == current_user.id:
+                    resume_content = resume.content
+            except Exception:
+                pass
+        await _generate_and_store_report(db, interview, resume_content, kanban_card_id)
     return {
         "message": "Interview completed",
         "session_state": InterviewSessionState.COMPLETED.value,
         "interview": updated_interview,
     }
+
+
+@router.post("/{interview_id}/end")
+async def end_interview(
+    interview_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Mark an interview as completed and emit the interview_completed event."""
+    interview = await _get_owned_interview(db, interview_id, current_user.id)
+    was_completed = interview.status == InterviewSessionState.COMPLETED.value
+    updated = await set_interview_completed(db, interview_id)
+    if not was_completed:
+        await track_interview_event(
+            db,
+            user_id=current_user.id,
+            event_type="interview_completed",
+            interview_id=interview_id,
+            job_id=interview.job_id,
+            payload={"session_state": InterviewSessionState.COMPLETED.value, "source": "interviews.end"},
+        )
+        kanban_card_id = None
+        try:
+            boards = await get_boards_by_user(db, current_user.id)
+            for board in boards:
+                cards = await get_cards_by_board(db, board.id)
+                for card in cards:
+                    if interview.job_id in (card.title or "") or (card.description and interview.job_id in card.description):
+                        kanban_card_id = card.id
+                        break
+                if kanban_card_id:
+                    break
+        except Exception:
+            pass
+        resume_content = None
+        resume_id = getattr(interview, "resume_id", None)
+        if resume_id:
+            try:
+                resume = await get_resume(db, resume_id)
+                if resume and resume.user_id == current_user.id:
+                    resume_content = resume.content
+            except Exception:
+                pass
+        await _generate_and_store_report(db, interview, resume_content, kanban_card_id)
+    return {
+        "message": "Interview ended",
+        "session_state": InterviewSessionState.COMPLETED.value,
+        "interview": updated,
+    }
+
+
+@router.get("/{interview_id}/report", response_model=InterviewReportResponse)
+async def get_interview_report_by_id(
+    interview_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    interview = await _get_owned_interview(db, interview_id, current_user.id)
+    report = await get_interview_report(db, interview_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Interview report not found")
+    return report
+
+
+@router.post("/{interview_id}/report/generate")
+async def generate_interview_report_endpoint(
+    interview_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    interview = await _get_owned_interview(db, interview_id, current_user.id)
+    kanban_card_id = None
+    try:
+        boards = await get_boards_by_user(db, current_user.id)
+        for board in boards:
+            cards = await get_cards_by_board(db, board.id)
+            for card in cards:
+                if interview.job_id in (card.title or "") or (card.description and interview.job_id in card.description):
+                    kanban_card_id = card.id
+                    break
+            if kanban_card_id:
+                break
+    except Exception:
+        pass
+    resume_content = None
+    resume_id = getattr(interview, "resume_id", None)
+    if resume_id:
+        try:
+            resume = await get_resume(db, resume_id)
+            if resume and resume.user_id == current_user.id:
+                resume_content = resume.content
+        except Exception:
+            pass
+    await _generate_and_store_report(db, interview, resume_content, kanban_card_id)
+    report = await get_interview_report(db, interview_id)
+    if not report:
+        raise HTTPException(status_code=500, detail="Failed to generate report")
+    return report
+
+
+@router.get("/{interview_id}/transcript", response_model=Dict[str, Any])
+async def get_interview_transcript(
+    interview_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return the stored transcript segments for an interview."""
+    interview = await _get_owned_interview(db, interview_id, current_user.id)
+    segments = await get_transcript_segments(db, interview_id)
+    return {
+        "interview_id": interview_id,
+        "segments": [
+            TranscriptSegment(
+                speaker=s.get("speaker", "assistant"),
+                text=s.get("text", ""),
+                start_ms=int(s.get("start_ms", 0)),
+                end_ms=int(s.get("end_ms", 0)),
+            ).model_dump()
+            for s in segments
+        ],
+    }
+
 
 @router.websocket("/{interview_id}/talk")
 async def interview_talk_websocket(
@@ -650,243 +852,297 @@ async def interview_talk_websocket(
     interview_id: int
 ):
     """
-    WebSocket endpoint for audio-based interview.
-    Requires authentication via first message: { "type": "auth", "token": "jwt_token" }
-    Then expects: { "type": "audio_chunk", "data": "base64_webm_opus" }
-    Responds: { "transcript": "stt_result", "ai_text": "Next question...", "ai_audio": "base64_webm_opus", "status": "success" }
-    """
-    logger.info(f"WebSocket connection attempt for interview {interview_id}")
-    # Accept WebSocket connection first
-    await websocket.accept()
-    logger.info(f"WebSocket connection accepted for interview {interview_id}")
+    Text-only WebSocket interview protocol.
 
-    # Wait for and validate the authentication message without ever logging its token.
-    try:
-        auth_message = InterviewWebSocketAuth.model_validate(await websocket.receive_json())
-        auth_token = auth_message.token
-    except WebSocketDisconnect:
-        logger.info("WebSocket disconnected before authentication: interview_id=%s", interview_id)
-        return
-    except (ValidationError, ValueError, TypeError):
-        logger.warning("WebSocket authentication payload rejected: interview_id=%s", interview_id)
-        await websocket.send_json({
-            "error": "Authentication required.",
-            "status": "error",
-            "error_type": "authentication",
-        })
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-        return
+    Client -> server:
+        { "type": "auth", "token": "<jwt>" }          (required first)
+        { "type": "config", "config": InterviewConfig }
+        { "type": "user_text", "text": "<utterance>" }
+        { "type": "end" }
+        { "type": "ping" }
+    Server -> client:
+        { "type": "auth_ok", "session_state", "interview_id", "job_id" }
+        { "type": "ai_token", "token", "index" }
+        { "type": "ai_done", "text" }
+        { "type": "end", "session_state", "reason" }
+        { "type": "error", "error", "error_type" }
+        { "type": "pong" }
+    """
+    logger.info("WebSocket connection attempt for interview %s", interview_id)
+    await websocket.accept()
 
     db = None
     db_gen = None
     try:
         db_gen = get_db()
         db = await anext(db_gen)
+
+        # ---- authentication ----
         try:
-            user = await get_user_from_token(db, auth_token)
+            raw_auth = await websocket.receive_json()
+        except WebSocketDisconnect:
+            return
+        except (ValueError, TypeError):
+            await websocket.send_json({"type": "error", "error": "Malformed auth payload.", "error_type": "format"})
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+
+        try:
+            auth_message = InterviewWebSocketAuth.model_validate(raw_auth)
+        except ValidationError:
+            await websocket.send_json({"type": "error", "error": "Authentication required.", "error_type": "authentication"})
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+
+        try:
+            user = await get_user_from_token(db, auth_message.token)
         except HTTPException:
-            logger.warning("WebSocket authentication failed: interview_id=%s reason=invalid_token", interview_id)
-            await websocket.send_json({
-                "error": "Invalid authentication token.",
-                "status": "error",
-                "error_type": "authentication",
-            })
+            await websocket.send_json({"type": "error", "error": "Invalid authentication token.", "error_type": "authentication"})
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
             return
 
         try:
             interview = await _get_owned_interview(db, interview_id, user.id)
         except HTTPException:
-            logger.warning(
-                "WebSocket interview authorization failed: user_id=%s interview_id=%s",
-                user.id,
-                interview_id,
-            )
-            await websocket.send_json({"error": "Interview not found.", "status": "error", "error_type": "not_found"})
+            await websocket.send_json({"type": "error", "error": "Interview not found.", "error_type": "not_found"})
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
             return
 
         if interview.status == InterviewSessionState.COMPLETED.value:
-            await websocket.send_json(_message_payload(
-                interview_id,
-                message_status="error",
-                session_state=InterviewSessionState.COMPLETED.value,
-                error="Interview is already completed.",
-            ))
+            await websocket.send_json({"type": "end", "session_state": InterviewSessionState.COMPLETED.value, "reason": "already_completed"})
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
             return
 
-        logger.info("WebSocket authenticated: user_id=%s interview_id=%s", user.id, interview_id)
+        # ---- configuration ----
+        try:
+            raw_config = await asyncio.wait_for(websocket.receive_json(), timeout=30.0)
+        except asyncio.TimeoutError:
+            await websocket.send_json({"type": "error", "error": "Interview config not received.", "error_type": "format"})
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+        except WebSocketDisconnect:
+            return
 
-        # Send authentication success
+        try:
+            config_message = InterviewWebSocketConfig.model_validate(raw_config)
+        except ValidationError:
+            # Default config if client omits it.
+            config_message = InterviewWebSocketConfig(type="config", config=InterviewConfig())
+
+        config = config_message.config
+        config_dict = config.model_dump()
+        await update_interview_config(db, interview_id, config_dict)
+
+        # ---- resume content (optional) ----
+        resume_content = None
+        if config_message.config and hasattr(config_message.config, "resume_id"):
+            pass  # resume_id not on InterviewConfig; kept for future extension
+
+        # ---- job context ----
+        job = await job_service.match_with_resume(interview.job_id, resume_content or "")
+        if not job:
+            await websocket.send_json({"type": "error", "error": "Job not found.", "error_type": "not_found"})
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+        job_dict = {
+            "title": job.title,
+            "company": job.company,
+            "description": job.description or "",
+            "requirements": job.requirements or "",
+        }
+
+        await track_interview_event(
+            db,
+            user_id=user.id,
+            event_type="interview_started",
+            interview_id=interview.id,
+            job_id=interview.job_id,
+            payload={"session_state": InterviewSessionState.STARTED.value, "source": "websocket.talk"},
+        )
+
+        await _set_session_state(db, interview.id, InterviewSessionState.ACTIVE)
+        interview.status = InterviewSessionState.ACTIVE.value
+
+        # ---- question plan ----
+        plan = await get_question_plan(db, interview.id)
+        if not plan:
+            plan = await interview_service.generate_question_plan(job_dict, resume_content, config_dict)
+            await save_question_plan(db, interview.id, plan)
+        if isinstance(plan, dict):
+            plan["cached"] = True
+
+        covered = await get_covered_competencies(db, interview.id)
+        duration_seconds = float(config.duration) * 60.0
+        start_time = time.monotonic()
+        idle_timeout_seconds = 90.0
+        last_activity = time.monotonic()
+        from app.core.config import settings
+        max_duration_seconds = float(settings.MAX_SESSION_LENGTH_MINUTES) * 60.0
+        if duration_seconds > max_duration_seconds:
+            duration_seconds = max_duration_seconds
+            config.duration = settings.MAX_SESSION_LENGTH_MINUTES
+
+        def elapsed_min() -> float:
+            return max(0.0, (duration_seconds - (time.monotonic() - start_time)) / 60.0)
+
+        async def send_tokens(conversation_history: List[Dict[str, str]], turn_count: int) -> str:
+            full = []
+            index = 0
+            async for token in interview_service.continue_interview_stream(
+                conversation_history, interview.job_id, resume_content, config_dict, plan, covered,
+                turn_count, elapsed_min(),
+            ):
+                full.append(token)
+                await websocket.send_json({"type": "ai_token", "token": token, "index": index})
+                index += 1
+            return "".join(full)
+
+        # ---- initial AI question ----
+        initial_text = await send_tokens([], 1)
+        await websocket.send_json({"type": "ai_done", "text": initial_text})
+        now_ms = int(time.time() * 1000)
+        await append_transcript_segment(
+            db, interview.id,
+            {"speaker": "assistant", "text": initial_text, "start_ms": now_ms, "end_ms": now_ms},
+        )
         await websocket.send_json({
-            "status": "authenticated",
-            "session_state": interview.status,
-            "message": "Ready to receive audio chunks",
+            "type": "auth_ok",
+            "session_state": InterviewSessionState.ACTIVE.value,
+            "interview_id": interview.id,
+            "job_id": interview.job_id,
         })
 
+        turn_count = 1
         while True:
+            # duration cap
+            if elapsed_min() <= 0:
+                await websocket.send_json({"type": "end", "session_state": InterviewSessionState.COMPLETED.value, "reason": "duration_cap"})
+                await set_interview_completed(db, interview.id)
+                break
+
             try:
-                data = await websocket.receive_json()
+                data = await asyncio.wait_for(websocket.receive_json(), timeout=idle_timeout_seconds)
+            except asyncio.TimeoutError:
+                await websocket.send_json({"type": "end", "session_state": InterviewSessionState.COMPLETED.value, "reason": "idle_timeout"})
+                await set_interview_completed(db, interview.id)
+                break
             except WebSocketDisconnect:
-                raise
-            except (ValueError, TypeError):
-                logger.warning("Malformed WebSocket JSON: interview_id=%s", interview_id)
-                await websocket.send_json(_message_payload(
-                    interview_id,
-                    message_status="error",
-                    session_state=interview.status,
-                    error="Malformed message payload.",
-                    error_type="format",
-                ))
-                continue
+                break
 
             if not isinstance(data, dict):
-                logger.warning("Malformed WebSocket message type: interview_id=%s", interview_id)
-                await websocket.send_json(_message_payload(
-                    interview_id,
-                    message_status="error",
-                    session_state=interview.status,
-                    error="Message payload must be a JSON object.",
-                    error_type="format",
-                ))
+                await websocket.send_json({"type": "error", "error": "Message payload must be a JSON object.", "error_type": "format"})
                 continue
 
-            if data.get("type") == "audio_chunk":
-                try:
-                    audio_message = InterviewWebSocketAudioMessage.model_validate(data)
-                except ValidationError:
-                    logger.warning("Malformed WebSocket audio payload: interview_id=%s", interview_id)
-                    await websocket.send_json(_message_payload(
-                        interview_id,
-                        message_status="error",
-                        session_state=interview.status,
-                        error="Audio data is required or exceeds the supported size limit.",
-                        error_type="format",
-                    ))
-                    continue
-                payload, _ = await _process_audio_conversation_turn(
-                    db,
-                    interview,
-                    audio_message.data,
-                )
-                await websocket.send_json(payload)
+            mtype = data.get("type")
 
-            elif data.get("type") == "video_frame":
-                try:
-                    video_message = InterviewWebSocketVideoFrame.model_validate(data)
-                except ValidationError:
-                    logger.warning("Malformed WebSocket video frame: interview_id=%s", interview_id)
-                    await websocket.send_json(_message_payload(
-                        interview_id,
-                        message_status="error",
-                        session_state=interview.status,
-                        error="Video frame payload is invalid.",
-                        error_type="format",
-                    ))
-                    continue
-
-                frame_data = video_message.data
-
-                await _set_session_state(db, interview_id, InterviewSessionState.ACTIVE)
-                interview.status = InterviewSessionState.ACTIVE.value
-
-                messages = await get_interview_messages(db, interview_id)
-                conversation_history = [
-                    {"role": msg.role, "content": msg.content} for msg in messages
-                ]
-                result = await interview_service.analyze_video_person(
-                    frame_data,
-                    timestamp=video_message.timestamp,
-                    job_id=interview.job_id,
-                    conversation_history=conversation_history,
-                    generate_ai=video_message.generate_ai,
-                )
-                if result.get("status") == "error" or result.get("error"):
-                    await _set_session_state(db, interview_id, InterviewSessionState.FAILED)
-                    interview.status = InterviewSessionState.FAILED.value
-                    await websocket.send_json(_message_payload(
-                        interview_id,
-                        message_status="error",
-                        session_state=interview.status,
-                        error="Video frame could not be processed.",
-                    ))
-                    continue
-
-                ai_text = result.get("content") or result.get("ai_text")
-                visual_data = result.get("visual_data") or result.get("visual")
-                if ai_text:
-                    saved_message = await create_interview_message(
-                        db,
-                        interview_id,
-                        InterviewMessageCreate(role="assistant", content=ai_text),
-                        transcript=result.get("transcript"),
-                        visual_data=visual_data,
-                        ai_avatar_video_url=result.get("ai_avatar_video_url"),
-                        video_url=result.get("video_url"),
-                        avatar_type=result.get("avatar_type"),
-                        avatar_style=result.get("avatar_style"),
-                        avatar_id=result.get("avatar_id"),
-                        response_mode=result.get("response_mode"),
-                        speaking_state=result.get("speaking_state"),
-                        persona=result.get("persona"),
-                        video_status=result.get("video_status"),
-                        playback_metadata=result.get("playback_metadata"),
-                    )
-                    await track_interview_event(
-                        db,
-                        user_id=user.id,
-                        event_type="question_generated",
-                        interview_id=interview_id,
-                        job_id=interview.job_id,
-                        payload={"source": "video_turn", "message_id": saved_message.id},
-                    )
-                    final_state = _playback_state(
-                        audio_data=result.get("ai_audio_data") or result.get("ai_audio_base64"),
-                        video_url=result.get("ai_avatar_video_url"),
-                    )
-                    await _set_session_state(db, interview_id, final_state)
-                    interview.status = final_state.value
-                    await websocket.send_json(_saved_message_payload(
-                        saved_message,
-                        status=result.get("status", "responding"),
-                        session_state=interview.status,
-                    ))
-                else:
-                    await websocket.send_json(_message_payload(
-                        interview_id,
-                        transcript=result.get("transcript"),
-                        visual_data=visual_data,
-                        message_status=result.get("status", "analyzing"),
-                        session_state=interview.status,
-                    ))
-
-            elif data.get("type") == "ping":
+            if mtype == "ping":
                 await websocket.send_json({"type": "pong"})
+                continue
+
+            if mtype == "end":
+                await websocket.send_json({"type": "end", "session_state": InterviewSessionState.COMPLETED.value, "reason": "user_end"})
+                await set_interview_completed(db, interview.id)
+                break
+
+            if mtype == "user_text":
+                try:
+                    msg = InterviewWebSocketUserText.model_validate(data)
+                except ValidationError:
+                    await websocket.send_json({"type": "error", "error": "Invalid user_text payload.", "error_type": "format"})
+                    continue
+                text = msg.text.strip()
+                if not text:
+                    continue
+
+                # record user segment
+                seg_start_ms = int(time.time() * 1000)
+                await append_transcript_segment(
+                    db, interview.id,
+                    {"speaker": "user", "text": text, "start_ms": seg_start_ms, "end_ms": seg_start_ms},
+                )
+                last_activity = time.monotonic()
+                turn_count += 1
+
+                # build conversation history from persisted transcript segments
+                segments = await get_transcript_segments(db, interview.id)
+                history = [
+                    {"role": "user" if s.get("speaker") == "user" else "assistant", "content": s.get("text", "")}
+                    for s in segments
+                ]
+
+                # advance plan: mark current competency covered when we have a plan
+                if isinstance(plan, dict):
+                    questions = plan.get("questions", [])
+                    idx = int(plan.get("current_index", 0))
+                    if 0 <= idx < len(questions):
+                        comp = questions[idx].get("competency")
+                        if comp and comp not in covered:
+                            covered.append(comp)
+                        questions[idx]["covered"] = True
+                        plan["current_index"] = idx + 1
+                        await save_question_plan(db, interview.id, plan)
+                        await update_covered_competencies(db, interview.id, covered)
+
+                # stream AI response
+                ai_text = await send_tokens(history, turn_count)
+                await websocket.send_json({"type": "ai_done", "text": ai_text})
+
+                seg_end_ms = int(time.time() * 1000)
+                await append_transcript_segment(
+                    db, interview.id,
+                    {"speaker": "assistant", "text": ai_text, "start_ms": seg_start_ms, "end_ms": seg_end_ms},
+                )
 
             else:
-                await websocket.send_json(_message_payload(
-                    interview_id,
-                    message_status="error",
-                    session_state=interview.status,
-                    error="Unknown message type.",
-                ))
+                await websocket.send_json({"type": "error", "error": "Unknown message type.", "error_type": "format"})
 
     except WebSocketDisconnect:
-        logger.info(f"WebSocket disconnected for interview {interview_id}")
+        logger.info("WebSocket disconnected for interview %s", interview_id)
     except Exception:
         logger.exception("WebSocket communication failed: interview_id=%s", interview_id)
         try:
-            if db is not None and "interview" in locals() and interview is not None:
+            if db is not None and 'interview' in locals() and interview is not None:
                 await _set_session_state(db, interview_id, InterviewSessionState.FAILED)
-            await websocket.send_json(_message_payload(
-                interview_id,
-                message_status="error",
-                session_state=InterviewSessionState.FAILED.value,
-                error="Interview communication failed.",
-            ))
-        except:
+            await websocket.send_json({"type": "error", "error": "Interview communication failed.", "error_type": "ai_generation"})
+        except Exception:
             pass
     finally:
         if db_gen is not None:
             await db_gen.aclose()
+
+
+
+
+@router.post("/{interview_id}/negotiate/start")
+async def start_negotiation_mode(
+    interview_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    interview = await _get_owned_interview(db, interview_id, current_user.id)
+    
+    # Switch to salary negotiation mode with a second interviewer persona
+    from app.schemas.interview import InterviewConfig
+    negotiation_config = {
+        "type": "mixed",
+        "difficulty": "senior",
+        "duration": 30,
+        "persona": "You are a seasoned HR/recruiting manager in salary negotiation mode. You play a second interviewer persona - professional but firm. You will present a job offer with a specific salary range and benefits package, negotiate based on the candidate's responses, and work towards a final offer. Be realistic but advocate for the company's budget while remaining fair.",
+        "language": "en",
+        "negotiation_mode": True,
+        "offer_made": True,
+        "salary_range": {"min": 80000, "max": 95000}
+    }
+    
+    await update_interview_config(db, interview_id, negotiation_config)
+    
+    return {
+        "message": "Salary negotiation mode started",
+        "interview_id": interview_id,
+        "persona": "HR Negotiator (Second Interviewer)",
+        "offer_details": {
+            "base_salary_range": {"min": 80000, "max": 95000},
+            "benefits": ["Health Insurance", "401k", "Remote Flexibility"],
+            "message": "We'd like to extend you an offer. Let's discuss the details."
+        }
+    }

@@ -20,38 +20,16 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "interview_messages",
-        sa.Column("avatar_id", sa.String(length=100), nullable=True),
-    )
-    op.add_column(
-        "interview_messages",
-        sa.Column("video_url", sa.Text(), nullable=True),
-    )
-    op.add_column(
-        "interview_messages",
-        sa.Column("speaking_state", sa.String(length=30), nullable=True),
-    )
-    op.add_column(
-        "interviews",
-        sa.Column("persona_config", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
-    )
-    op.add_column(
-        "interviews",
-        sa.Column("session_metadata", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
-    )
-    op.add_column(
-        "interviews",
-        sa.Column("interviewer_type", sa.String(length=50), nullable=True),
-    )
-    op.add_column(
-        "interviews",
-        sa.Column("camera_settings", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
-    )
-    op.add_column(
-        "interviews",
-        sa.Column("audio_settings", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
-    )
+    # Startup may have already added nullable columns to a legacy database.
+    # IF NOT EXISTS keeps a later Alembic upgrade safe and repeatable.
+    op.execute("ALTER TABLE interview_messages ADD COLUMN IF NOT EXISTS avatar_id VARCHAR(100) NULL")
+    op.execute("ALTER TABLE interview_messages ADD COLUMN IF NOT EXISTS video_url TEXT NULL")
+    op.execute("ALTER TABLE interview_messages ADD COLUMN IF NOT EXISTS speaking_state VARCHAR(30) NULL")
+    op.execute("ALTER TABLE interviews ADD COLUMN IF NOT EXISTS persona_config JSONB NULL")
+    op.execute("ALTER TABLE interviews ADD COLUMN IF NOT EXISTS session_metadata JSONB NULL")
+    op.execute("ALTER TABLE interviews ADD COLUMN IF NOT EXISTS interviewer_type VARCHAR(50) NULL")
+    op.execute("ALTER TABLE interviews ADD COLUMN IF NOT EXISTS camera_settings JSONB NULL")
+    op.execute("ALTER TABLE interviews ADD COLUMN IF NOT EXISTS audio_settings JSONB NULL")
     op.execute(
         "UPDATE interview_messages SET video_url = ai_avatar_video_url "
         "WHERE video_url IS NULL AND ai_avatar_video_url IS NOT NULL"

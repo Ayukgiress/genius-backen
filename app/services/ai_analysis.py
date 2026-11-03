@@ -1,7 +1,9 @@
 import json
 import re
-from typing import Dict, Any, Optional
+import asyncio
+from typing import Dict, Any, Optional, List
 from app.core.config import settings
+from app.services.llm_provider import llm_service, RateLimitExceeded, LLMProviderError
 import logging
 
 logger = logging.getLogger(__name__)
@@ -10,128 +12,89 @@ MAX_RESUME_LENGTH = 50000
 
 
 class ResumeAnalysisService:
-    """Service for analyzing resumes using Groq AI (free tier)"""
-    
+    """Service for analyzing resumes using AI via the LLM provider abstraction.
+
+    Requests are routed through Groq -> Gemini -> OpenRouter with automatic
+    fallback and per-user rate limiting.
+    """
+
     def __init__(self):
-        self.groq_client = None
-        self.gemini_client = None
-        self.model_name = None
-        self.provider = None
-        
-        if settings.GROQ_API_KEY:
-            try:
-                from groq import AsyncGroq
-                self.groq_client = AsyncGroq(api_key=settings.GROQ_API_KEY)
-                self.model_name = "llama-3.3-70b-versatile"
-                self.provider = "groq"
-                logger.info(f"Using Groq for AI analysis (free tier) with model {self.model_name}")
-            except ImportError:
-                logger.warning("Groq package not installed")
-        
-        if settings.GEMINI_API_KEY and not self.groq_client:
-            try:
-                import google.genai as genai
-                self.gemini_client = genai.Client(api_key=settings.GEMINI_API_KEY)
-                self.model_name = "gemini-2.0-flash"
-                self.provider = "gemini"
-                logger.info(f"Using Gemini for AI analysis with model {self.model_name}")
-            except ImportError:
-                logger.warning("Google GenAI package not installed")
-    
-    async def analyze_resume(self, resume_content: str) -> Dict[str, Any]:
+        pass
+
+    async def analyze_resume(
+        self, resume_content: str, user_id: Optional[int] = None
+    ) -> Dict[str, Any]:
         """
         Analyze a resume and provide suggestions using AI.
         """
-        if not self.groq_client and not self.gemini_client:
-            raise ValueError("No AI provider configured. Please set GROQ_API_KEY or GEMINI_API_KEY")
-        
+        if not llm_service.providers:
+            raise ValueError("No AI provider configured. Please set GROQ_API_KEY, GEMINI_API_KEY, or OPENROUTER_API_KEY")
+
         if len(resume_content) > MAX_RESUME_LENGTH:
             raise ValueError(f"Resume content exceeds maximum length of {MAX_RESUME_LENGTH} characters")
-        
+
         if len(resume_content.strip()) < 50:
             logger.warning(f"Resume content very short ({len(resume_content.strip())} chars), using fallback scoring")
             return self._rule_based_scoring(resume_content)
-        
-        if len(resume_content) > MAX_RESUME_LENGTH:
-            raise ValueError(f"Resume content exceeds maximum length of {MAX_RESUME_LENGTH} characters")
-        
+
         prompt = self._build_analysis_prompt(resume_content)
-        
-        # Try Groq first (free)
-        if self.groq_client:
-            try:
-                logger.info(f"Starting AI resume analysis with Groq model {self.model_name}")
-                response = await self.groq_client.chat.completions.create(
-                    model=self.model_name,
-                    messages=[
-                        {"role": "system", "content": "You are a professional resume analyst. Provide detailed analysis in JSON format. The overall_score MUST be an integer between 0 and 100."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.3,
-                    max_tokens=4000,
-                    response_format={"type": "json_object"}
-                )
-                logger.info("AI resume analysis completed successfully with Groq")
-                return self._parse_ai_response(response.choices[0].message.content)
-            except Exception as groq_error:
-                logger.warning(f"Groq failed, trying Gemini: {groq_error}")
-        
-        if self.gemini_client:
-            try:
-                model = "gemini-2.0-flash"
-                logger.info(f"Starting AI resume analysis with Gemini model {model}")
-                response = self.gemini_client.models.generate_content(
-                    model=model,
-                    contents=prompt
-                )
-                logger.info("AI resume analysis completed successfully with Gemini")
-                return self._parse_ai_response(response.text)
-            except Exception as gemini_error:
-                logger.error(f"Gemini also failed: {gemini_error}")
-                raise ValueError(f"AI analysis failed: {str(gemini_error)}")
-        
-        raise ValueError("No AI provider available or all providers failed")
-    
-    async def get_suggestions(self, resume_content: str, focus_area: str = "general") -> Dict[str, Any]:
+        messages: List[Dict[str, str]] = [
+            {"role": "system", "content": "You are a professional resume analyst. Provide detailed analysis in JSON format. The overall_score MUST be an integer between 0 and 100."},
+            {"role": "user", "content": prompt},
+        ]
+
+        try:
+            logger.info("Starting AI resume analysis via LLM provider fallback chain")
+            response_text = await llm_service.complete_with_fallback(
+                user_id=user_id or 0,
+                messages=messages,
+                temperature=0.3,
+                max_tokens=4000,
+            )
+            logger.info("AI resume analysis completed successfully")
+            return self._parse_ai_response(response_text)
+        except RateLimitExceeded as e:
+            logger.warning("Rate limit exceeded for user %s: %s", user_id, e)
+            raise ValueError(f"AI analysis rate limit exceeded: {str(e)}")
+        except LLMProviderError as e:
+            logger.error("All LLM providers failed: %s", e)
+            raise ValueError(f"AI analysis failed: {str(e)}")
+        except Exception as e:
+            logger.error("AI analysis failed: %s", e)
+            raise ValueError(f"AI analysis failed: {str(e)}")
+
+    async def get_suggestions(
+        self, resume_content: str, focus_area: str = "general", user_id: Optional[int] = None
+    ) -> Dict[str, Any]:
         """Get AI suggestions for improving a specific area of the resume."""
-        if not self.groq_client and not self.gemini_client:
+        if not llm_service.providers:
             raise ValueError("No AI provider configured")
-        
+
         prompt = self._build_suggestions_prompt(resume_content, focus_area)
-        
-        if self.groq_client:
-            try:
-                logger.info(f"Generating AI suggestions with Groq for focus_area={focus_area}")
-                response = await self.groq_client.chat.completions.create(
-                    model=self.model_name,
-                    messages=[
-                        {"role": "system", "content": "You are a professional resume coach. Provide detailed suggestions in JSON format."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.3,
-                    max_tokens=4000,
-                    response_format={"type": "json_object"}
-                )
-                logger.info("AI suggestions generated successfully with Groq")
-                return self._parse_ai_response(response.choices[0].message.content)
-            except Exception as groq_error:
-                logger.warning(f"Groq failed for suggestions, trying Gemini: {groq_error}")
-        
-        # Fallback to Gemini
-        if self.gemini_client:
-            try:
-                logger.info(f"Generating AI suggestions with Gemini for focus_area={focus_area}")
-                response = self.gemini_client.models.generate_content(
-                    model=self.model_name,
-                    contents=prompt
-                )
-                logger.info("AI suggestions generated successfully with Gemini")
-                return self._parse_ai_response(response.text)
-            except Exception as gemini_error:
-                logger.error(f"Gemini also failed for suggestions: {gemini_error}")
-                raise ValueError(f"AI suggestion generation failed: {str(gemini_error)}")
-        
-        raise ValueError("No AI provider available")
+        messages: List[Dict[str, str]] = [
+            {"role": "system", "content": "You are a professional resume coach. Provide detailed suggestions in JSON format."},
+            {"role": "user", "content": prompt},
+        ]
+
+        try:
+            logger.info("Generating AI suggestions via LLM provider for focus_area=%s", focus_area)
+            response_text = await llm_service.complete_with_fallback(
+                user_id=user_id or 0,
+                messages=messages,
+                temperature=0.3,
+                max_tokens=4000,
+            )
+            logger.info("AI suggestions generated successfully")
+            return self._parse_ai_response(response_text)
+        except RateLimitExceeded as e:
+            logger.warning("Rate limit exceeded for suggestions user %s: %s", user_id, e)
+            raise ValueError(f"AI suggestion rate limit exceeded: {str(e)}")
+        except LLMProviderError as e:
+            logger.error("All LLM providers failed for suggestions: %s", e)
+            raise ValueError(f"AI suggestion generation failed: {str(e)}")
+        except Exception as e:
+            logger.error("AI suggestions failed: %s", e)
+            raise ValueError(f"AI suggestion generation failed: {str(e)}")
     
     def _build_analysis_prompt(self, resume_content: str) -> str:
         """Build the prompt for resume analysis."""

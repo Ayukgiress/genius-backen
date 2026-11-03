@@ -9,6 +9,11 @@ from app.crud.kanban import (
     get_board, get_boards_by_user, create_board, update_board,
     get_card, get_cards_by_board, create_card, update_card, delete_card
 )
+from app.crud.interview import get_or_create_interview
+from app.schemas.interview import InterviewCreate
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/kanban", tags=["kanban"])
 
@@ -99,15 +104,30 @@ async def update_kanban_card(
     card_id: int,
     card_in: KanbanCardUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
 ):
     card = await get_card(db, card_id)
     if not card:
         raise HTTPException(status_code=404, detail="Card not found")
     board = await get_board(db, card.board_id)
     if not board or board.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Card not found")
-    return await update_card(db, card, card_in)
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    old_status = card.status
+    updated_card = await update_card(db, card, card_in)
+    
+    # Interview → kanban hook: moving a card to Interview creates a prep session
+    if card_in.status == "interview" and old_status != "interview":
+        try:
+            # Try to create/get interview session
+            job_id = card.title[:50] if card.title else str(card.id)
+            interview_in = InterviewCreate(job_id=job_id)
+            interview, created = await get_or_create_interview(db, interview_in, user_id=current_user.id)
+            logger.info(f"Created interview session for card {card_id}: interview_id={interview.id}, created={created}")
+        except Exception as e:
+            logger.exception(f"Failed to create interview session for card {card_id}: {e}")
+    
+    return updated_card
 
 @router.delete("/cards/{card_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_kanban_card(

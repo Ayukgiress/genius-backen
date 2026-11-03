@@ -53,12 +53,13 @@ async def get_recommendations(
     """Get AI-matched job recommendations based on user's resume and career preferences."""
     # Check usage limits for free users
     if current_user.subscription_plan == "free":
+        from app.core.config import settings
         current_usage = await get_current_month_usage(db, current_user.id, "job_matching")
-        if current_usage >= 5:  # Allow 5 job matching requests per month for free users
+        if current_usage >= settings.FREE_JOB_MATCHING_PER_MONTH:  # Allow N job matching requests per month for free users
             return {
                 "recommendations": [],
                 "limit_reached": True,
-                "message": "Free users are limited to 5 job matching requests per month. Please upgrade to Pro for unlimited access."
+                "message": f"Free users are limited to {settings.FREE_JOB_MATCHING_PER_MONTH} job matching requests per month. Please upgrade to Pro for unlimited access."
             }
 
     resume_content = ""
@@ -104,12 +105,13 @@ async def match_job(
     """Match a specific job with a resume."""
     # Check usage limits for free users
     if current_user.subscription_plan == "free":
+        from app.core.config import settings
         current_usage = await get_current_month_usage(db, current_user.id, "job_matching")
-        if current_usage >= 5:  # Allow 5 job matching requests per month for free users
+        if current_usage >= settings.FREE_JOB_MATCHING_PER_MONTH:  # Allow N job matching requests per month for free users
             return {
                 "job": None,
                 "limit_reached": True,
-                "message": "Free users are limited to 5 job matching requests per month. Please upgrade to Pro for unlimited access."
+                "message": f"Free users are limited to {settings.FREE_JOB_MATCHING_PER_MONTH} job matching requests per month. Please upgrade to Pro for unlimited access."
             }
 
     from app.crud.resume import get_resume as crud_get_resume
@@ -318,3 +320,69 @@ async def start_job_interview(
                 db, db_interview.id, InterviewSessionState.FAILED
             )
         raise HTTPException(status_code=500, detail="Failed to start interview.") from e
+
+@router.get("/{job_id}/research")
+async def get_company_research(
+    job_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    from app.services.interview import interview_service
+    from app.services.job_scraper import job_service
+    from datetime import datetime, timedelta
+    import json
+    
+    job = await job_service.get_job(job_id) or await job_service.match_with_resume(job_id, "")
+    job_dict = {
+        "title": getattr(job, "title", "Unknown"),
+        "company": getattr(job, "company", "Unknown"),
+        "description": getattr(job, "description", "") or "",
+        "requirements": getattr(job, "requirements", "") or "",
+    } if job else {"title": "Unknown", "company": "Unknown", "description": "", "requirements": ""}
+    
+    company = job_dict.get("company", "Unknown")
+    
+    if not interview_service.groq_client:
+        raise HTTPException(status_code=503, detail="AI service not configured")
+    
+    prompt = f"""You are a company research expert. Provide a comprehensive brief for interviewing at this company.
+
+Job: {job_dict}
+Company: {company}
+
+Return JSON with:
+{{
+  "company_summary": "brief company overview",
+  "culture": "culture insights",
+  "values": ["value1"],
+  "likely_questions": [
+    {{"question": "...", "reason": "...", "prep_tip": "..."}}
+  ],
+  "questions_to_ask_them": [
+    {{"question": "...", "category": "culture/team/role/growth", "reason": "..."}}
+  ],
+  "tips": ["tip1"],
+  "red_flags": ["..."],
+  "recent_news": ["..."]
+}}"""
+    
+    try:
+        response = await interview_service.groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": "You are a company research analyst. Output only valid JSON."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.4,
+            max_tokens=2000,
+            response_format={"type": "json_object"},
+        )
+        result = json.loads(response.choices[0].message.content)
+        result["company"] = company
+        result["cached_at"] = datetime.utcnow().isoformat()
+        result["cache_ttl_hours"] = 24
+        result["cached"] = True
+        return result
+    except Exception as e:
+        logger.exception("Company research failed")
+        raise HTTPException(status_code=500, detail="Failed to generate research brief")

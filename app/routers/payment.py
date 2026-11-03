@@ -10,6 +10,7 @@ import stripe
 
 router = APIRouter(prefix="/payment", tags=["payment"])
 
+
 @router.post("/create-checkout-session")
 async def create_checkout_session(
     current_user: User = Depends(get_current_user),
@@ -64,9 +65,10 @@ async def create_checkout_session(
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+
 @router.post("/webhook")
 async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
-    """Handle Stripe webhook events."""
+    """Handle Stripe webhook events - Stripe is source of truth for Pro status."""
     if not settings.STRIPE_SECRET_KEY:
         raise HTTPException(status_code=500, detail="Stripe not configured")
     
@@ -88,7 +90,7 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     except stripe.error.SignatureVerificationError:
         raise HTTPException(status_code=400, detail="Invalid signature")
 
-    # Handle the event
+    # Handle the event - Stripe is source of truth
     if event['type'] == 'checkout.session.completed':
         session = event['data']['object']
         customer_id = getattr(session, 'customer', None)
@@ -106,7 +108,10 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             from app.crud.user_usage import reset_action_usage_for_month
             from datetime import datetime
             now = datetime.now()
+            # Reset all usage counters on upgrade
             await reset_action_usage_for_month(db, user.id, "job_matching", now.month, now.year)
+            await reset_action_usage_for_month(db, user.id, "ai_analysis", now.month, now.year)
+            await reset_action_usage_for_month(db, user.id, "interview", now.month, now.year)
             
             db.add(user)
             await db.commit()
@@ -133,13 +138,27 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                 from datetime import datetime
                 now = datetime.now()
                 await reset_action_usage_for_month(db, user.id, "job_matching", now.month, now.year)
+                await reset_action_usage_for_month(db, user.id, "ai_analysis", now.month, now.year)
+                await reset_action_usage_for_month(db, user.id, "interview", now.month, now.year)
 
                 db.add(user)
                 await db.commit()
                 print(f"Pro upgrade from invoice for user {user.id} ({user.email})")
-        else:
-            # Subscription renewed - no action needed
-            pass
+        elif billing_reason == 'subscription_cycle':
+            # Renewal - ensure Pro status is maintained
+            customer_id = getattr(invoice, 'customer', None)
+            subscription_id = getattr(invoice, 'subscription', None)
+            result = await db.execute(
+                select(User).where(User.stripe_customer_id == customer_id)
+            )
+            user = result.scalar_one_or_none()
+            if user:
+                user.subscription_plan = "pro"
+                user.subscription_status = "active"
+                if subscription_id:
+                    user.subscription_id = subscription_id
+                db.add(user)
+                await db.commit()
 
     elif event['type'] == 'invoice.payment_failed':
         invoice = event['data']['object']
@@ -151,6 +170,27 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         user = result.scalar_one_or_none()
         if user:
             user.subscription_status = "past_due"
+            db.add(user)
+            await db.commit()
+
+    elif event['type'] == 'customer.subscription.updated':
+        subscription = event['data']['object']
+        customer_id = getattr(subscription, 'customer', None)
+        status = getattr(subscription, 'status', None)
+        
+        result = await db.execute(
+            select(User).where(User.stripe_customer_id == customer_id)
+        )
+        user = result.scalar_one_or_none()
+        if user:
+            if status == 'active':
+                user.subscription_plan = "pro"
+                user.subscription_status = "active"
+            elif status in ['past_due', 'unpaid']:
+                user.subscription_status = "past_due"
+            elif status == 'canceled':
+                user.subscription_plan = "free"
+                user.subscription_status = "inactive"
             db.add(user)
             await db.commit()
 

@@ -351,3 +351,172 @@ async def get_interview_messages_for_interviews(db: AsyncSession, interview_ids:
     for message in result.scalars().all():
         messages_by_interview.setdefault(message.interview_id, []).append(message)
     return messages_by_interview
+
+
+# ---------------------------------------------------------------------------
+# Config / question plan / transcript helpers
+# ---------------------------------------------------------------------------
+
+async def update_interview_config(
+    db: AsyncSession, interview_id: int, config: Dict[str, Any]
+) -> Optional[Interview]:
+    result = await db.execute(select(Interview).where(Interview.id == interview_id))
+    interview = result.scalar_one_or_none()
+    if not interview:
+        return None
+    interview.config = config
+    db.add(interview)
+    try:
+        await db.commit()
+        await db.refresh(interview)
+    except Exception:
+        await db.rollback()
+        logger.exception("Interview config update failed: interview_id=%s", interview_id)
+        raise
+    return interview
+
+
+async def _get_session_metadata(db: AsyncSession, interview_id: int) -> Optional[Dict[str, Any]]:
+    result = await db.execute(
+        select(Interview.session_metadata).where(Interview.id == interview_id)
+    )
+    row = result.scalar_one_or_none()
+    return row if isinstance(row, dict) else {}
+
+
+async def save_question_plan(
+    db: AsyncSession, interview_id: int, plan: Dict[str, Any]
+) -> Optional[Interview]:
+    result = await db.execute(select(Interview).where(Interview.id == interview_id))
+    interview = result.scalar_one_or_none()
+    if not interview:
+        return None
+    metadata = dict(interview.session_metadata or {})
+    metadata["question_plan"] = plan
+    interview.session_metadata = metadata
+    db.add(interview)
+    try:
+        await db.commit()
+        await db.refresh(interview)
+    except Exception:
+        await db.rollback()
+        logger.exception("Question plan save failed: interview_id=%s", interview_id)
+        raise
+    return interview
+
+
+async def get_question_plan(db: AsyncSession, interview_id: int) -> Optional[Dict[str, Any]]:
+    metadata = await _get_session_metadata(db, interview_id)
+    return metadata.get("question_plan") if metadata else None
+
+
+async def update_covered_competencies(
+    db: AsyncSession, interview_id: int, covered: List[str]
+) -> Optional[Interview]:
+    result = await db.execute(select(Interview).where(Interview.id == interview_id))
+    interview = result.scalar_one_or_none()
+    if not interview:
+        return None
+    metadata = dict(interview.session_metadata or {})
+    metadata["covered_competencies"] = list(covered)
+    interview.session_metadata = metadata
+    db.add(interview)
+    try:
+        await db.commit()
+        await db.refresh(interview)
+    except Exception:
+        await db.rollback()
+        logger.exception("Covered competencies update failed: interview_id=%s", interview_id)
+        raise
+    return interview
+
+
+async def get_covered_competencies(db: AsyncSession, interview_id: int) -> List[str]:
+    metadata = await _get_session_metadata(db, interview_id)
+    val = metadata.get("covered_competencies", []) if metadata else []
+    return list(val) if isinstance(val, list) else []
+
+
+async def append_transcript_segment(
+    db: AsyncSession, interview_id: int, segment: Dict[str, Any]
+) -> Optional[Interview]:
+    result = await db.execute(select(Interview).where(Interview.id == interview_id))
+    interview = result.scalar_one_or_none()
+    if not interview:
+        return None
+    segments = list(interview.transcript_segments or [])
+    segments.append(segment)
+    interview.transcript_segments = segments
+    db.add(interview)
+    try:
+        await db.commit()
+        await db.refresh(interview)
+    except Exception:
+        await db.rollback()
+        logger.exception("Transcript segment append failed: interview_id=%s", interview_id)
+        raise
+    return interview
+
+
+async def get_transcript_segments(db: AsyncSession, interview_id: int) -> List[Dict[str, Any]]:
+    result = await db.execute(
+        select(Interview.transcript_segments).where(Interview.id == interview_id)
+    )
+    row = result.scalar_one_or_none()
+    return list(row) if isinstance(row, list) else []
+
+
+async def set_interview_completed(db: AsyncSession, interview_id: int) -> Optional[Interview]:
+    return await update_interview_status(db, interview_id, InterviewSessionState.COMPLETED)
+
+
+# ---------------------------------------------------------------------------
+# Interview Report CRUD
+# ---------------------------------------------------------------------------
+from app.models.interview import InterviewReport
+from app.schemas.interview import InterviewReportCreate
+
+
+async def get_interview_report(db: AsyncSession, interview_id: int):
+    result = await db.execute(
+        select(InterviewReport).where(InterviewReport.interview_id == interview_id)
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_interview_reports_by_user(db: AsyncSession, user_id: int):
+    result = await db.execute(
+        select(InterviewReport).where(InterviewReport.user_id == user_id)
+    )
+    return result.scalars().all()
+
+
+async def create_interview_report(db: AsyncSession, report: InterviewReportCreate):
+    db_report = InterviewReport(**report.model_dump())
+    db.add(db_report)
+    try:
+        await db.commit()
+        await db.refresh(db_report)
+    except Exception:
+        await db.rollback()
+        logger.exception("Interview report insert failed: interview_id=%s", report.interview_id)
+        raise
+    return db_report
+
+
+async def upsert_interview_report(db: AsyncSession, report: InterviewReportCreate):
+    existing = await get_interview_report(db, report.interview_id)
+    if existing:
+        for key, value in report.model_dump().items():
+            setattr(existing, key, value)
+        db.add(existing)
+        try:
+            await db.commit()
+            await db.refresh(existing)
+        except Exception:
+            await db.rollback()
+            logger.exception("Interview report update failed: interview_id=%s", report.interview_id)
+            raise
+        return existing
+    return await create_interview_report(db, report)
+

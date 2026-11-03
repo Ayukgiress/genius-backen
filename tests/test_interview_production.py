@@ -28,6 +28,7 @@ from app.schemas.interview import (
     InterviewMessageCreate,
 )
 from app.services.interview import InterviewService
+from app.main import _ensure_interview_session_metadata
 
 
 class InterviewRequestValidationTests(unittest.TestCase):
@@ -218,6 +219,31 @@ class InterviewVideoFrameValidationTests(unittest.TestCase):
             InterviewService._decode_video_frame_payload(payload),
             image_bytes,
         )
+
+
+class InterviewSchemaBootstrapTests(unittest.IsolatedAsyncioTestCase):
+    async def test_existing_database_gets_nullable_session_metadata_columns(self):
+        connection = SimpleNamespace(execute=AsyncMock())
+
+        await _ensure_interview_session_metadata(connection)
+
+        self.assertEqual(connection.execute.await_count, 5)
+        statements = [str(call.args[0]) for call in connection.execute.await_args_list]
+        for column_name in (
+            "persona_config",
+            "session_metadata",
+            "interviewer_type",
+            "camera_settings",
+            "audio_settings",
+        ):
+            self.assertTrue(
+                any(
+                    f"ADD COLUMN IF NOT EXISTS {column_name}" in statement
+                    and "NULL" in statement
+                    for statement in statements
+                ),
+                f"Missing idempotent nullable DDL for {column_name}",
+            )
 
 
 class WebSocketAuthenticationTests(unittest.IsolatedAsyncioTestCase):

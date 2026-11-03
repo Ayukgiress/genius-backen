@@ -25,6 +25,8 @@ import app.models.kanban
 import app.models.resume
 import app.models.job
 import app.models.interview
+import app.models.career_profile
+import app.models.event
 
 from app.db.session import Base
 

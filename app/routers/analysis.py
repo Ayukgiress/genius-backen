@@ -1,9 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
 from slowapi import Limiter
 from slowapi.util import get_remote_address
-from app.db.session import get_db
+from app.db.session import get_db, SessionLocal
 from app.routers.deps import get_current_user
 from app.schemas.user import User
 from app.schemas.analysis import Analysis, AnalysisCreate, AnalysisUpdate, FocusArea
@@ -11,11 +11,16 @@ from app.crud.analysis import get_analysis, get_analysis_by_resume, create_analy
 from app.crud.resume import get_resume
 from app.crud.user_usage import get_current_month_usage, increment_usage
 from app.services.ai_analysis import resume_analysis_service, MAX_RESUME_LENGTH
+from app.services.events import track_event
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
 
-# Rate limiter instance for AI endpoints
+# Rate limiter instance for AI endpoints (per-IP, in addition to per-user LLM limits)
 limiter = Limiter(key_func=get_remote_address)
+
 
 @router.get("", response_model=List[Analysis])
 async def list_analyses(
@@ -32,6 +37,7 @@ async def list_analyses(
     )
     return result.scalars().all()
 
+
 @router.post("", response_model=Analysis, status_code=status.HTTP_201_CREATED)
 async def create_resume_analysis(
     analysis_in: AnalysisCreate,
@@ -41,12 +47,13 @@ async def create_resume_analysis(
     resume = await get_resume(db, analysis_in.resume_id)
     if not resume or resume.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Resume not found")
-    
+
     existing = await get_analysis_by_resume(db, analysis_in.resume_id)
     if existing:
         raise HTTPException(status_code=400, detail="Analysis already exists for this resume")
-    
+
     return await create_analysis(db, analysis_in)
+
 
 @router.get("/{analysis_id}", response_model=Analysis)
 async def get_resume_analysis(
@@ -57,13 +64,13 @@ async def get_resume_analysis(
     analysis = await get_analysis(db, analysis_id)
     if not analysis:
         raise HTTPException(status_code=404, detail="Analysis not found")
-    
-    # Verify the resume belongs to the current user
+
     resume = await get_resume(db, analysis.resume_id)
     if not resume or resume.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Analysis not found")
-    
+
     return analysis
+
 
 @router.patch("/{analysis_id}", response_model=Analysis)
 async def update_resume_analysis(
@@ -75,13 +82,13 @@ async def update_resume_analysis(
     analysis = await get_analysis(db, analysis_id)
     if not analysis:
         raise HTTPException(status_code=404, detail="Analysis not found")
-    
-    # Verify the resume belongs to the current user
+
     resume = await get_resume(db, analysis.resume_id)
     if not resume or resume.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Analysis not found")
-    
+
     return await update_analysis(db, analysis, analysis_in)
+
 
 @router.get("/resume/{resume_id}", response_model=Analysis)
 async def get_analysis_by_resume_id(
@@ -89,102 +96,139 @@ async def get_analysis_by_resume_id(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    # Verify the resume belongs to the current user
     resume = await get_resume(db, resume_id)
     if not resume or resume.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Resume not found")
-    
+
     analysis = await get_analysis_by_resume(db, resume_id)
     if not analysis:
         raise HTTPException(status_code=404, detail="Analysis not found for this resume")
-    
+
     return analysis
 
 
-@router.post("/resume/{resume_id}/analyze", response_model=Analysis, status_code=status.HTTP_201_CREATED)
+async def _run_resume_analysis(
+    analysis_id: int,
+    resume_id: int,
+    resume_content: str,
+    user_id: int,
+):
+    """Background task: run AI analysis and update the analysis record."""
+    async with SessionLocal() as db:
+        try:
+            ai_result = await resume_analysis_service.analyze_resume(
+                resume_content, user_id=user_id
+            )
+            analysis = await get_analysis(db, analysis_id)
+            if analysis:
+                await update_analysis(
+                    db,
+                    analysis,
+                    AnalysisUpdate(
+                        status="completed",
+                        result=ai_result,
+                        feedback=ai_result.get("summary", ""),
+                    ),
+                )
+            await track_event(
+                db,
+                user_id,
+                "analysis_done",
+                {
+                    "resume_id": resume_id,
+                    "analysis_id": analysis_id,
+                    "score": ai_result.get("overall_score"),
+                },
+            )
+            await increment_usage(db, user_id, "ai_analysis")
+            logger.info(
+                "Background analysis completed: analysis_id=%s resume_id=%s user_id=%s",
+                analysis_id, resume_id, user_id,
+            )
+        except Exception as e:
+            logger.exception(
+                "Background analysis failed: analysis_id=%s resume_id=%s user_id=%s",
+                analysis_id, resume_id, user_id,
+            )
+            try:
+                async with SessionLocal() as fix_db:
+                    analysis = await get_analysis(fix_db, analysis_id)
+                    if analysis:
+                        await update_analysis(
+                            fix_db,
+                            analysis,
+                            AnalysisUpdate(status="failed", feedback=str(e)[:1000]),
+                        )
+            except Exception:
+                logger.exception("Failed to mark analysis %s as failed", analysis_id)
+
+
+@router.post("/resume/{resume_id}/analyze", status_code=status.HTTP_202_ACCEPTED)
 @limiter.limit("10/minute")
 async def analyze_resume_with_ai(
     request: Request,
+    background_tasks: BackgroundTasks,
     resume_id: int,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """
-    Analyze a resume using AI (Gemini) and save the analysis results.
+    Queue a resume AI analysis in a background task so the API never blocks
+    on slow provider calls. Returns 202 immediately; poll GET /analysis/{id}
+    for the completed result.
     Rate limited to 10 requests per minute per IP.
     Limited to 3 analyses per month for free users.
     """
-    # Verify the resume belongs to the current user
     resume = await get_resume(db, resume_id)
     if not resume or resume.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Resume not found")
 
-    # Check usage limits for free users
+    from app.core.config import settings
     if current_user.subscription_plan == "free":
         current_usage = await get_current_month_usage(db, current_user.id, "ai_analysis")
-        if current_usage >= 3:
+        if current_usage >= settings.FREE_AI_ANALYSIS_PER_MONTH:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Free users are limited to 3 AI resume analyses per month. Please upgrade to Pro for unlimited access."
+                detail=f"Free users are limited to {settings.FREE_AI_ANALYSIS_PER_MONTH} AI resume analyses per month. Please upgrade to Pro for unlimited access.",
             )
-
-    # Check if resume has content to analyze
-    if not resume.content:
         raise HTTPException(status_code=400, detail="Resume has no content to analyze")
 
-    # Check if content is just a placeholder (failed PDF extraction)
     if resume.content.startswith("[PDF file uploaded") or resume.content.startswith("["):
         raise HTTPException(status_code=400, detail="Resume content could not be extracted. Please upload a text-based PDF or plain text resume.")
 
     if len(resume.content) > MAX_RESUME_LENGTH:
         raise HTTPException(
             status_code=400,
-            detail=f"Resume content exceeds maximum length of {MAX_RESUME_LENGTH} characters"
+            detail=f"Resume content exceeds maximum length of {MAX_RESUME_LENGTH} characters",
         )
-    
-    # Check if analysis already exists for this resume
+
     existing = await get_analysis_by_resume(db, resume_id)
     if existing:
-        # Update existing analysis
-        try:
-            ai_result = await resume_analysis_service.analyze_resume(resume.content)
-            analysis_update = AnalysisUpdate(
-                status="completed",
-                result=ai_result,
-                feedback=ai_result.get("summary", "")
-            )
-            analysis = await update_analysis(db, existing, analysis_update)
-
-            # Increment usage counter for free users
-            if current_user.subscription_plan == "free":
-                await increment_usage(db, current_user.id, "ai_analysis")
-
-            return analysis
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"AI analysis failed: {str(e)}")
-    
-    try:
-        # Generate AI analysis
-        ai_result = await resume_analysis_service.analyze_resume(resume.content)
-
-        # Create new analysis with AI results
+        analysis = await update_analysis(
+            db,
+            existing,
+            AnalysisUpdate(status="pending", result=None, feedback=None),
+        )
+    else:
         analysis_in = AnalysisCreate(
             resume_id=resume_id,
-            status="completed",
-            result=ai_result,
-            feedback=ai_result.get("summary", "")
+            status="pending",
         )
         analysis = await create_analysis(db, analysis_in)
 
-        # Increment usage counter for free users
-        if current_user.subscription_plan == "free":
-            await increment_usage(db, current_user.id, "ai_analysis")
+    background_tasks.add_task(
+        _run_resume_analysis,
+        analysis.id,
+        resume_id,
+        resume.content,
+        current_user.id,
+    )
 
-        return analysis
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"AI analysis failed: {str(e)}")
+    return {
+        "analysis_id": analysis.id,
+        "status": "pending",
+        "message": "Resume analysis queued. Poll GET /analysis/{analysis_id} for the result.",
+    }
 
 
 @router.post("/resume/{resume_id}/suggestions")
@@ -202,37 +246,33 @@ async def get_resume_suggestions(
     Rate limited to 10 requests per minute per IP.
     Limited to 3 analyses per month for free users.
     """
-    # Verify the resume belongs to the current user
     resume = await get_resume(db, resume_id)
     if not resume or resume.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Resume not found")
 
-    # Check usage limits for free users
+    from app.core.config import settings
     if current_user.subscription_plan == "free":
         current_usage = await get_current_month_usage(db, current_user.id, "ai_analysis")
-        if current_usage >= 3:
+        if current_usage >= settings.FREE_AI_ANALYSIS_PER_MONTH:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Free users are limited to 3 AI resume analyses per month. Please upgrade to Pro for unlimited access."
+                detail=f"Free users are limited to {settings.FREE_AI_ANALYSIS_PER_MONTH} AI resume analyses per month. Please upgrade to Pro for unlimited access.",
             )
-
-    # Check if resume has content
-    if not resume.content:
         raise HTTPException(status_code=400, detail="Resume has no content")
 
     if len(resume.content) > MAX_RESUME_LENGTH:
         raise HTTPException(
             status_code=400,
-            detail=f"Resume content exceeds maximum length of {MAX_RESUME_LENGTH} characters"
+            detail=f"Resume content exceeds maximum length of {MAX_RESUME_LENGTH} characters",
         )
 
     try:
         suggestions = await resume_analysis_service.get_suggestions(
             resume.content,
-            focus_area=focus_area
+            focus_area=focus_area,
+            user_id=current_user.id,
         )
 
-        # Increment usage counter for free users
         if current_user.subscription_plan == "free":
             await increment_usage(db, current_user.id, "ai_analysis")
 

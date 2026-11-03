@@ -28,10 +28,13 @@ class Interview(Base):
     interviewer_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     camera_settings: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
     audio_settings: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    config: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    transcript_segments: Mapped[Optional[List[Dict[str, Any]]]] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     messages: Mapped[List["InterviewMessage"]] = relationship("InterviewMessage", back_populates="interview", cascade="all, delete-orphan")
+    report: Mapped[Optional["InterviewReport"]] = relationship("InterviewReport", back_populates="interview", uselist=False, cascade="all, delete-orphan")
 
     @property
     def session_state(self) -> str:
@@ -87,3 +90,32 @@ class InterviewMessage(Base):
     @property
     def response_status(self) -> str:
         return "success"
+
+
+class InterviewReport(Base):
+    __tablename__ = "interview_reports"
+    __table_args__ = (
+        Index("ix_interview_reports_user_id", "user_id"),
+        Index("ix_interview_reports_job_id", "job_id"),
+        Index("ix_interview_reports_interview_id", "interview_id"),
+        Index("ix_interview_reports_kanban_card_id", "kanban_card_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    interview_id: Mapped[int] = mapped_column(ForeignKey("interviews.id"), nullable=False, unique=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    job_id: Mapped[str] = mapped_column(String(50), nullable=False)
+    resume_id: Mapped[Optional[int]] = mapped_column(ForeignKey("resumes.id"), nullable=True)
+    kanban_card_id: Mapped[Optional[int]] = mapped_column(ForeignKey("kanban_cards.id"), nullable=True)
+    overall_score: Mapped[Optional[float]] = mapped_column(nullable=True)
+    per_question_scores: Mapped[Optional[List[Dict[str, Any]]]] = mapped_column(JSONB, nullable=True)
+    strengths: Mapped[Optional[List[str]]] = mapped_column(JSONB, nullable=True)
+    gaps: Mapped[Optional[List[str]]] = mapped_column(JSONB, nullable=True)
+    sample_answer: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    rubric: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    feedback: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    report_data: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    interview: Mapped["Interview"] = relationship("Interview", back_populates="report")

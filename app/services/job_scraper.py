@@ -952,11 +952,39 @@ class JobService:
         resume_content: str,
         career_prefs: Optional[Dict] = None,
     ) -> Optional[JobMatchResponse]:
+        # Caching of job matches to stay inside free LLM limits
+        if not hasattr(self, '_match_cache'):
+            self._match_cache = {}
+        cache_key = f"{job_id}:{hash(resume_content) % 10000}"
+        from datetime import datetime, timedelta
+        cached_result = self._match_cache
+        if cache_key in cached_result:
+            cached = cached_result[cache_key]
+            if datetime.utcnow() - cached['cached_at'] < timedelta(hours=1):
+                result = cached['result']
+                if isinstance(result, dict) and not hasattr(result, '__dict__'):
+                    result['cached'] = True
+                elif hasattr(result, '__dict__'):
+                    try:
+                        result.__dict__['cached'] = True
+                    except Exception:
+                        pass
+                return result
+
         all_jobs = await self._collect_all_jobs(use_live_data=True)
         job = next((j for j in all_jobs if j.get("id") == job_id), None)
         if not job:
             return None
-        return calculate_match(resume_content, job, career_prefs)
+        result = calculate_match(resume_content, job, career_prefs)
+        self._match_cache[cache_key] = {'result': result, 'cached_at': datetime.utcnow()}
+        if hasattr(result, '__dict__'):
+            try:
+                result.__dict__['cached'] = True
+            except Exception:
+                pass
+        elif isinstance(result, dict):
+            result['cached'] = True
+        return result
 
     async def get_recommendations(
         self,

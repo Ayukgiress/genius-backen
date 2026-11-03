@@ -74,10 +74,14 @@ async def generate_custom_letter(
     """Generate a custom letter using AI."""
     # Check subscription for free users
     if current_user.subscription_plan == "free":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Custom letter generation is available for Pro users only. Please upgrade your subscription."
-        )
+        from app.core.config import settings
+        from app.crud.user_usage import get_current_month_usage, increment_usage
+        current_usage = await get_current_month_usage(db, current_user.id, "ai_analysis")
+        if current_usage >= settings.FREE_AI_ANALYSIS_PER_MONTH:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Free users are limited to {settings.FREE_AI_ANALYSIS_PER_MONTH} AI generations per month. Please upgrade to Pro for unlimited access."
+            )
 
     resume_content = ""
     if request.resume_id:
@@ -95,6 +99,11 @@ async def generate_custom_letter(
             letter_type=request.letter_type,
             custom_instructions=request.custom_instructions
         )
+
+        # Increment usage for free users
+        if current_user.subscription_plan == "free":
+            from app.crud.user_usage import increment_usage
+            await increment_usage(db, current_user.id, "ai_analysis")
 
         # Create the letter in database
         letter_in = LetterCreate(
