@@ -376,6 +376,7 @@ async def read_user_me(current_user: User = Depends(get_current_user)):
 
 
 @router.put("/me", response_model=User)
+@router.patch("/me", response_model=User)
 async def update_user_me(
     name: Optional[str] = None,
     bio: Optional[str] = None,
