@@ -1,0 +1,234 @@
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, or_
+from app.db.session import get_db
+from app.routers.deps import get_current_user
+from app.models.user import User
+from app.crud.user_usage import get_current_month_usage, reset_action_usage_for_month
+from datetime import datetime
+from pydantic import BaseModel
+from typing import Optional
+
+router = APIRouter(prefix="/debug", tags=["debug"])
+
+
+class DebugTokenLookup(BaseModel):
+    token: str
+
+
+@router.get("/lookup-token")
+async def lookup_token(
+    token: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Debug endpoint to look up a user by verification token."""
+    from sqlalchemy import select
+    
+    result = await db.execute(
+        select(User).where(User.verification_token == token)
+    )
+    user = result.scalar_one_or_none()
+    
+    if not user:
+        # Try finding by partial match
+        result = await db.execute(
+            select(User).where(User.verification_token.like(f"{token[:10]}%"))
+        )
+        users = result.scalars().all()
+        
+        if users:
+            return {
+                "status": "partial_match",
+                "matched_users": [
+                    {
+                        "id": u.id,
+                        "email": u.email,
+                        "verification_token": u.verification_token[:20] + "..." if u.verification_token else None,
+                        "is_verified": u.is_verified,
+                        "verification_token_expires": u.verification_token_expires.isoformat() if u.verification_token_expires else None
+                    }
+                    for u in users
+                ]
+            }
+        
+        return {
+            "status": "not_found",
+            "token_searched": token,
+            "message": "No user found with this verification token"
+        }
+    
+    return {
+        "status": "found",
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "verification_token": user.verification_token[:20] + "..." if user.verification_token else None,
+            "is_verified": user.is_verified,
+            "verification_token_expires": user.verification_token_expires.isoformat() if user.verification_token_expires else None
+        }
+    }
+
+
+@router.get("/list-unverified")
+async def list_unverified_users(
+    db: AsyncSession = Depends(get_db),
+    limit: int = 10
+):
+    """Debug endpoint to list unverified users."""
+    from sqlalchemy import select
+    
+    result = await db.execute(
+        select(User)
+        .where(User.is_verified == False)
+        .order_by(User.created_at.desc())
+        .limit(limit)
+    )
+    users = result.scalars().all()
+    
+    return {
+        "unverified_users": [
+            {
+                "id": u.id,
+                "email": u.email,
+                "verification_token": u.verification_token[:20] + "..." if u.verification_token else None,
+                "verification_token_expires": u.verification_token_expires.isoformat() if u.verification_token_expires else None,
+                "created_at": u.created_at.isoformat() if u.created_at else None
+            }
+            for u in users
+        ]
+    }
+
+
+@router.get("/list-users")
+async def list_all_users(
+    db: AsyncSession = Depends(get_db),
+    limit: int = 10
+):
+    """Debug endpoint to list all users."""
+    from sqlalchemy import select
+    
+    result = await db.execute(
+        select(User)
+        .order_by(User.created_at.desc())
+        .limit(limit)
+    )
+    users = result.scalars().all()
+    
+    return {
+        "total_users": len(users),
+        "users": [
+            {
+                "id": u.id,
+                "email": u.email,
+                "is_verified": u.is_verified,
+                "verification_token": u.verification_token[:20] + "..." if u.verification_token else None,
+                "verification_token_expires": u.verification_token_expires.isoformat() if u.verification_token_expires else None,
+                "google_id": u.google_id[:10] + "..." if u.google_id else None,
+                "created_at": u.created_at.isoformat() if u.created_at else None
+            }
+            for u in users
+        ]
+    }
+
+class UpdatePlanRequest(BaseModel):
+    plan: str  # "free" or "pro"
+
+class TestEmailRequest(BaseModel):
+    email: str
+
+@router.post("/test-email")
+async def test_email(
+    request: TestEmailRequest
+):
+    """Debug endpoint to test email sending."""
+    from app.services.email import _send_email_sync
+    import asyncio
+    
+    subject = "Test Email from Genius API"
+    html_content = "<h1>Test Email</h1><p>This is a test email from the Genius API debug endpoint.</p>"
+    text_content = "This is a test email from the Genius API debug endpoint."
+    
+    result = await asyncio.to_thread(
+        _send_email_sync,
+        request.email,
+        subject,
+        html_content,
+        text_content
+    )
+    
+    if result:
+        return {"status": "success", "message": f"Email sent successfully to {request.email}"}
+    else:
+        return {"status": "error", "message": "Failed to send email. Check logs for details."}
+
+
+@router.get("/check-connectivity")
+async def check_connectivity():
+    """Diagnostic endpoint to check which SMTP ports are reachable."""
+    import socket
+    
+    results = {}
+    targets = [
+        ("smtp.gmail.com", 587),
+        ("smtp.gmail.com", 465),
+        ("google.com", 80)
+    ]
+    
+    for host, port in targets:
+        try:
+            with socket.create_connection((host, port), timeout=5):
+                results[f"{host}:{port}"] = "Connected"
+        except Exception as e:
+            results[f"{host}:{port}"] = f"Failed: {str(e)}"
+            
+    return results
+
+
+@router.get("/user-status")
+async def get_user_status(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Get current user's subscription status and job_matching usage (temporary debug endpoint)."""
+    now = datetime.now()
+
+    job_usage = await get_current_month_usage(db, current_user.id, "job_matching")
+
+    return {
+        "user_id": current_user.id,
+        "email": current_user.email,
+        "subscription_plan": current_user.subscription_plan,
+        "subscription_status": current_user.subscription_status,
+        "stripe_customer_id": current_user.stripe_customer_id,
+        "subscription_id": current_user.subscription_id,
+        "current_job_matching_usage": job_usage,
+        "monthly_limit_free": 5,
+        "is_pro": current_user.subscription_plan == "pro",
+        "can_access_recommendations": current_user.subscription_plan != "free" or job_usage < 5
+    }
+
+@router.post("/update-plan")
+async def update_user_plan(
+    request: UpdatePlanRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Update current user's subscription plan (temporary debug endpoint)."""
+    if request.plan not in ["free", "pro"]:
+        raise HTTPException(status_code=400, detail="Invalid plan. Must be 'free' or 'pro'")
+
+    current_user.subscription_plan = request.plan
+    if request.plan == "pro":
+        current_user.subscription_status = "active"
+        # Reset usage
+        now = datetime.now()
+        await reset_action_usage_for_month(db, current_user.id, "job_matching", now.month, now.year)
+    else:
+        current_user.subscription_status = "inactive"
+
+    db.add(current_user)
+    await db.commit()
+    await db.refresh(current_user)
+
+    return {"message": f"Plan updated to {request.plan}", "user": await get_user_status(db, current_user)}
+
