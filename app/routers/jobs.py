@@ -1,5 +1,6 @@
 import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, Field
 from typing import Optional, List
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.schemas.job import JobResponse, JobMatchResponse, JobSearchParams
@@ -139,31 +140,54 @@ async def match_job(
     }
 
 
+class AddToKanbanRequest(BaseModel):
+    """Optional job metadata used as a stub when the live lookup returns nothing."""
+    title: Optional[str] = Field(default=None, max_length=255)
+    company: Optional[str] = Field(default=None, max_length=255)
+    description: Optional[str] = Field(default=None, max_length=20_000)
+
+
 @router.post("/{job_id}/add-to-kanban")
 async def add_to_kanban(
     job_id: str,
+    body: AddToKanbanRequest = AddToKanbanRequest(),
     board_id: int = Query(..., description="Kanban board ID"),
     status: str = Query("todo", description="Column status (todo, in_progress, review, done)"),
     resume_id: Optional[int] = Query(None, description="Resume ID for matching"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Add a job to the Kanban pipeline."""
+    """Add a job to the Kanban pipeline.
+
+    If the job ID is no longer in the live feed (e.g. an external scraped ID
+    that has aged out), the caller may supply title/company/description in the
+    request body so a stub card can still be created.
+    """
     board = await crud_kanban.get_board(db, board_id)
     if not board or board.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Board not found")
-    
+
     job = await job_service.match_with_resume(job_id, "")
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    
+
+    if job:
+        title = job.title
+        description = job.description
+    elif body.title:
+        # Use caller-supplied metadata as a best-effort stub.
+        company_suffix = f" — {body.company}" if body.company else ""
+        title = f"{body.title}{company_suffix}"
+        description = body.description
+    else:
+        # No live data and no metadata: create a minimal stub from the job ID.
+        title = job_id
+        description = None
+
     card_data = KanbanCardCreate(
-        title=job.title,
-        description=job.description,
+        title=title,
+        description=description,
         status=status,
-        board_id=board_id
+        board_id=board_id,
     )
-    
     card = await crud_kanban.create_card(db, card_data)
     return card
 

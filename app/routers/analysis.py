@@ -55,6 +55,23 @@ async def create_resume_analysis(
     return await create_analysis(db, analysis_in)
 
 
+@router.get("/resume/{resume_id}", response_model=Analysis)
+async def get_analysis_by_resume_id(
+    resume_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    resume = await get_resume(db, resume_id)
+    if not resume or resume.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Resume not found")
+
+    analysis = await get_analysis_by_resume(db, resume_id)
+    if not analysis:
+        raise HTTPException(status_code=404, detail="Analysis not found for this resume")
+
+    return analysis
+
+
 @router.get("/{analysis_id}", response_model=Analysis)
 async def get_resume_analysis(
     analysis_id: int,
@@ -88,23 +105,6 @@ async def update_resume_analysis(
         raise HTTPException(status_code=404, detail="Analysis not found")
 
     return await update_analysis(db, analysis, analysis_in)
-
-
-@router.get("/resume/{resume_id}", response_model=Analysis)
-async def get_analysis_by_resume_id(
-    resume_id: int,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    resume = await get_resume(db, resume_id)
-    if not resume or resume.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Resume not found")
-
-    analysis = await get_analysis_by_resume(db, resume_id)
-    if not analysis:
-        raise HTTPException(status_code=404, detail="Analysis not found for this resume")
-
-    return analysis
 
 
 async def _run_resume_analysis(
@@ -191,9 +191,11 @@ async def analyze_resume_with_ai(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Free users are limited to {settings.FREE_AI_ANALYSIS_PER_MONTH} AI resume analyses per month. Please upgrade to Pro for unlimited access.",
             )
+
+    if not resume.content or not resume.content.strip():
         raise HTTPException(status_code=400, detail="Resume has no content to analyze")
 
-    if resume.content.startswith("[PDF file uploaded") or resume.content.startswith("["):
+    if resume.content.startswith("["):
         raise HTTPException(status_code=400, detail="Resume content could not be extracted. Please upload a text-based PDF or plain text resume.")
 
     if len(resume.content) > MAX_RESUME_LENGTH:
@@ -258,6 +260,8 @@ async def get_resume_suggestions(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Free users are limited to {settings.FREE_AI_ANALYSIS_PER_MONTH} AI resume analyses per month. Please upgrade to Pro for unlimited access.",
             )
+
+    if not resume.content or not resume.content.strip():
         raise HTTPException(status_code=400, detail="Resume has no content")
 
     if len(resume.content) > MAX_RESUME_LENGTH:
