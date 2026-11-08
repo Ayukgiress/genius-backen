@@ -643,11 +643,11 @@ async def _generate_and_store_report(
     try:
         job = await job_service.match_with_resume(interview.job_id, resume_content or "")
         job_dict = {
-            "title": getattr(job, "title", "Unknown"),
-            "company": getattr(job, "company", "Unknown"),
-            "description": getattr(job, "description", "") or "",
-            "requirements": getattr(job, "requirements", "") or "",
-        } if job else {"title": "Unknown", "company": "Unknown", "description": "", "requirements": ""}
+            "title": getattr(job, "title", "Unknown") if job else "Unknown",
+            "company": getattr(job, "company", "Unknown") if job else "Unknown",
+            "description": (getattr(job, "description", "") or "") if job else "",
+            "requirements": (getattr(job, "requirements", "") or "") if job else "",
+        }
         
         messages = await get_interview_messages(db, interview.id)
         conversation_history = [{"role": msg.role, "content": msg.content} for msg in messages if msg.role in ["user", "assistant"]]
@@ -940,15 +940,11 @@ async def interview_talk_websocket(
 
         # ---- job context ----
         job = await job_service.match_with_resume(interview.job_id, resume_content or "")
-        if not job:
-            await websocket.send_json({"type": "error", "error": "Job not found.", "error_type": "not_found"})
-            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-            return
         job_dict = {
-            "title": job.title,
-            "company": job.company,
-            "description": job.description or "",
-            "requirements": job.requirements or "",
+            "title": job.title if job else "the role",
+            "company": job.company if job else "the company",
+            "description": (job.description or "") if job else "",
+            "requirements": (str(job.requirements) if job and job.requirements else "") if job else "",
         }
 
         await track_interview_event(

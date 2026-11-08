@@ -693,14 +693,11 @@ class InterviewService:
             raise ValueError('Groq client not configured. Please set GROQ_API_KEY')
 
         job = await job_service.match_with_resume(job_id, resume_content or '')
-        if not job:
-            raise ValueError(f'Job with ID {job_id} not found')
-
         job_dict = {
-            'title': job.title,
-            'company': job.company,
-            'description': job.description or '',
-            'requirements': job.requirements or '',
+            'title': job.title if job else 'the role',
+            'company': job.company if job else 'the company',
+            'description': (job.description or '') if job else '',
+            'requirements': (str(job.requirements) if job and job.requirements else '') if job else '',
         }
 
         system_prompt = self._build_interview_system_prompt(job_dict, resume_content)
@@ -747,14 +744,11 @@ class InterviewService:
             raise ValueError('Groq client not configured')
 
         job = await job_service.match_with_resume(job_id, resume_content or '')
-        if not job:
-            raise ValueError(f'Job with ID {job_id} not found')
-
         job_dict = {
-            'title': job.title,
-            'company': job.company,
-            'description': job.description or '',
-            'requirements': job.requirements or '',
+            'title': job.title if job else 'the role',
+            'company': job.company if job else 'the company',
+            'description': (job.description or '') if job else '',
+            'requirements': (str(job.requirements) if job and job.requirements else '') if job else '',
         }
 
         system_prompt = self._build_interview_system_prompt(job_dict, resume_content)
@@ -1190,20 +1184,13 @@ Focus on: per-question score, strengths, gaps, sample answer, and rubric with re
         resume_content: Optional[str],
         config: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """Initialize an interview session with a config + question plan.
-
-        Returns {{"plan": plan_dict, "system_prompt": str}} so the caller can
-        persist config/plan and stream the first question.
-        """
+        """Initialize an interview session with a config + question plan."""
         job = await job_service.match_with_resume(job_id, resume_content or '')
-        if not job:
-            raise ValueError(f'Job with ID {job_id} not found')
-
         job_dict = {
-            'title': job.title,
-            'company': job.company,
-            'description': job.description or '',
-            'requirements': job.requirements or '',
+            'title': job.title if job else 'the role',
+            'company': job.company if job else 'the company',
+            'description': (job.description or '') if job else '',
+            'requirements': (str(job.requirements) if job and job.requirements else '') if job else '',
         }
 
         plan = await self.generate_question_plan(job_dict, resume_content, config)
@@ -1232,14 +1219,11 @@ Focus on: per-question score, strengths, gaps, sample answer, and rubric with re
     ) -> AsyncIterator[str]:
         """Stream an AI interview turn, yielding tokens one at a time."""
         job = await job_service.match_with_resume(job_id, resume_content or '')
-        if not job:
-            raise ValueError(f'Job with ID {job_id} not found')
-
         job_dict = {
-            'title': job.title,
-            'company': job.company,
-            'description': job.description or '',
-            'requirements': job.requirements or '',
+            'title': job.title if job else 'the role',
+            'company': job.company if job else 'the company',
+            'description': (job.description or '') if job else '',
+            'requirements': (str(job.requirements) if job and job.requirements else '') if job else '',
         }
 
         system_prompt = self._build_interviewer_system_prompt(
