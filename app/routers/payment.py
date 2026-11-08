@@ -40,7 +40,6 @@ async def create_checkout_session(
         checkout_session = await run_in_threadpool(
             stripe.checkout.Session.create,
             customer=customer.id,
-            payment_method_types=['card'],
             line_items=[{
                 'price_data': {
                     'currency': 'usd',
