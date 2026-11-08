@@ -673,6 +673,8 @@ async def _generate_and_store_report(
         logger.info("Generated interview report for interview_id=%s", interview.id)
     except Exception:
         logger.exception("Failed to generate interview report for interview_id=%s", interview.id)
+
+@router.post("/{interview_id}/complete")
 async def complete_interview(
     interview_id: int,
     db: AsyncSession = Depends(get_db),

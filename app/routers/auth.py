@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, Body
 from fastapi.security import OAuth2PasswordRequestForm
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
 from datetime import datetime, timedelta, timezone
@@ -376,24 +377,39 @@ async def read_user_me(current_user: User = Depends(get_current_user)):
 
 
 @router.put("/me", response_model=User)
+class UpdateMeBody(BaseModel):
+    name: Optional[str] = None
+    bio: Optional[str] = None
+    profile_picture: Optional[str] = None
+    career_preferences: Optional[dict] = None
+    career_profile: Optional[dict] = None
+
 @router.patch("/me", response_model=User)
 async def update_user_me(
     name: Optional[str] = None,
     bio: Optional[str] = None,
     profile_picture: Optional[str] = None,
     career_preferences: Optional[dict] = None,
+    body: Optional[UpdateMeBody] = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Update current user profile."""
-    if name is not None:
-        current_user.name = name
-    if bio is not None:
-        current_user.bio = bio
-    if profile_picture is not None:
-        current_user.profile_picture = profile_picture
-    if career_preferences is not None:
-        current_user.career_preferences = career_preferences
+    # Merge body fields with query params (body takes precedence)
+    effective_name = (body.name if body else None) or name
+    effective_bio = (body.bio if body else None) or bio
+    effective_pic = (body.profile_picture if body else None) or profile_picture
+    # career_profile and career_preferences are treated as the same field
+    effective_prefs = (body.career_profile if body else None) or (body.career_preferences if body else None) or career_preferences
+
+    if effective_name is not None:
+        current_user.name = effective_name
+    if effective_bio is not None:
+        current_user.bio = effective_bio
+    if effective_pic is not None:
+        current_user.profile_picture = effective_pic
+    if effective_prefs is not None:
+        current_user.career_preferences = effective_prefs
 
     db.add(current_user)
     await db.commit()
